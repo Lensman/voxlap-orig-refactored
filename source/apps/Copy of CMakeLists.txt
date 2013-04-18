@@ -1,0 +1,49 @@
+
+if ( NOT NO_EXECUTABLES )
+ 
+  add_executable ( ${GFX}_simple WIN32 simple.cpp )
+  add_executable ( ${GFX}_game WIN32 game.cpp )
+  add_executable ( ${GFX}_voxed WIN32 voxed.cpp )
+  add_executable ( ${GFX}_kwalk WIN32 kwalk.cpp )
+
+  set ( GFX_LIBS ${GFX}main1 voxlap5 )
+
+  add_library(${GFX}main1 STATIC
+      ${GFX}main.cpp
+  )
+  target_link_libraries ( ${GFX}main1 kplib voxlap5)
+
+  # ------------------------------------------------------
+  # Set link libraries depending on selected GFX subsystem
+  # ------------------------------------------------------
+
+  if ( GFX STREQUAL "sdl" )
+    target_link_libraries(${GFX}main1 ${SDL_LIBRARY})
+    target_link_libraries(${GFX}main1 ${SDLMAIN_LIBRARY})
+  elseif ( GFX STREQUAL "win" )
+    target_link_libraries(${GFX}main1 ${DIRECTINPUT_DINPUT_LIBRARY})
+    target_link_libraries(${GFX}main1 ${DIRECTINPUT_DDRAW_LIBRARY})
+    target_link_libraries(${GFX}main1 ${DIRECTINPUT_DXGUID_LIBRARY})
+  endif()
+    
+  message(STATUS "${GFX}main1 building with: ${V5LIB} $ENV{EXTRA_LIBS}")
+
+  # --------------------------------------------------------
+  # Breaking DRY here, consider making these into a function
+  # --------------------------------------------------------
+
+  add_dependencies(${GFX}_simple ${GFX_LIBS} ${V5LIB} )
+  target_link_libraries(${GFX}_simple ${GFX_LIBS} )
+
+  add_dependencies(${GFX}_game ${GFX_LIBS} ${V5LIB} )
+  target_link_libraries(${GFX}_game ${GFX_LIBS})
+
+  add_dependencies(${GFX}_voxed ${GFX_LIBS} ${V5LIB} )
+  target_link_libraries(${GFX}_voxed ${GFX_LIBS})
+
+  add_dependencies(${GFX}_kwalk ${GFX_LIBS} ${V5LIB} )
+  target_link_libraries(${GFX}_kwalk ${GFX_LIBS})
+
+endif()
+
+

@@ -1,0 +1,168 @@
+#pragma once
+
+#include <stdio.h>
+/**
+ *  Moved this CPU / FPU code here 'cause it's generic, and doesn't just belong to just SDLMain or Winmain
+ */
+//#include "sysmain.h"
+
+
+//for code_rwx_unlock only
+#ifndef _WIN32
+#    include <unistd.h>
+#    include <sys/mman.h>
+#else
+#    include <windows.h>
+#    include <winbase.h>
+#endif
+//======================== CPU detection code begins ========================
+
+long cputype;
+long fpuasm[2];
+/**
+ *  Test specific processor flags
+*/
+extern inline long testflag (long c)
+{
+	#if defined(__GNUC__)//gcc inline asm
+	long a;
+	__asm__ __volatile__ (
+		"pushf\npopl %%eax\nmovl %%eax, %%ebx\nxorl %%ecx, %%eax\npushl %%eax\n"
+		"popf\npushf\npopl %%eax\nxorl %%ebx, %%eax\nmovl $1, %%eax\njne 0f\n"
+		"xorl %%eax, %%eax\n0:"
+		: "=a" (a) : "c" (c) : "ebx","cc" );
+	return a;
+	#elif defined(_MSC_VER)
+	_asm
+	{
+		mov ecx, c
+		pushfd
+		pop eax
+		mov edx, eax
+		xor eax, ecx
+		push eax
+		popfd
+		pushfd
+		pop eax
+		xor eax, edx
+		mov eax, 1
+		jne menostinx
+		xor eax, eax
+		menostinx:
+	}
+	#endif
+}
+
+extern inline void cpuid (long a, long *s)
+{
+	#if defined(__GNUC__)
+	__asm__ __volatile__ (
+		"cpuid\nmovl %%eax, (%%esi)\nmovl %%ebx, 4(%%esi)\n"
+		"movl %%ecx, 8(%%esi)\nmovl %%edx, 12(%%esi)"
+		: "+a" (a) : "S" (s) : "ebx","ecx","edx","memory","cc");
+	#elif defined(_MSC_VER)
+	_asm
+	{
+		push ebx
+		push esi
+		mov eax, a
+		cpuid
+		mov esi, s
+		mov dword ptr [esi+0],  eax
+		mov dword ptr [esi+4],  ebx
+		mov dword ptr [esi+8],  ecx
+		mov dword ptr [esi+12], edx
+		pop esi
+		pop ebx
+	}
+	#endif
+}
+
+/**
+ *  Bit numbers of return value:
+ *	@return 0:FPU, 4:RDTSC, 15:CMOV, 22:MMX+, 23:MMX, 25:SSE, 26:SSE2, 30:3DNow!+, 31:3DNow!
+*/
+extern inline long getcputype ()
+{
+	long i, cpb[4], cpid[4];
+	if (!testflag(0x200000)) return(0);
+	cpuid(0,cpid); if (!cpid[0]) return(0);
+	cpuid(1,cpb); i = (cpb[3]&~((1<<22)|(1<<30)|(1<<31)));
+	cpuid(0x80000000,cpb);
+	if (((unsigned long)cpb[0]) > 0x80000000)
+	{
+		cpuid(0x80000001,cpb);
+		i |= (cpb[3]&(1<<31));
+		if (!((cpid[1]^0x68747541)|(cpid[3]^0x69746e65)|(cpid[2]^0x444d4163))) //AuthenticAMD
+			i |= (cpb[3]&((1<<22)|(1<<30)));
+	}
+	if (i&(1<<25)) i |= (1<<22); //SSE implies MMX+ support
+	return(i);
+}
+
+//========================= CPU detection code ends =========================
+
+/**
+ *  Precision: bits 8-9:, Rounding: bits 10-11:
+ *	00 = 24-bit    (0)   00 = nearest/even (0)
+ *	01 = reserved  (1)   01 = -inf         (4)
+ *	10 = 53-bit    (2)   10 = inf          (8)
+ *	11 = 64-bit    (3)   11 = 0            (c)
+*/
+
+extern inline void fpuinit (long a)
+{
+	#if defined(__GNUC__) //gcc inline asm
+	__asm__ __volatile__
+	(
+		"fninit\n"
+		"fstcww %c[fp]\n"
+		"andb   $240, %c[fp]+1(,1)\n"
+		"orb    %%al, %c[fp]+1(,1)\n"
+		"fldcww %c[fp]\n"
+		:
+		: "a" (a), [fp] "p" (fpuasm)
+		: "cc"
+	);
+	#elif defined(_MSC_VER)
+	_asm
+	{
+		mov	eax, a
+		fninit
+		fstcw	fpuasm
+		and	byte ptr fpuasm[1], 0f0h
+		or	byte ptr fpuasm[1], al
+		fldcw	fpuasm
+	}
+	#endif
+}
+void v5_asm_dep_unlock ( )
+{
+
+}
+extern inline void code_rwx_unlock ( void * dep_protect_start, void * dep_protect_end)
+{
+#ifdef _WIN32
+    #ifndef PAGE_EXECUTE_READWRITE
+    #define PAGE_EXECUTE_READWRITE 0x40
+    #endif
+    unsigned long oldprotectcode;
+    VirtualProtect((void *)dep_protect_start, ((size_t)dep_protect_end - (size_t)dep_protect_start), PAGE_EXECUTE_READWRITE, &oldprotectcode);
+#else
+    size_t floorptr = (size_t)dep_protect_start & -sysconf(_SC_PAGE_SIZE);
+    mprotect((void *)floorptr, ((size_t)dep_protect_end - (size_t)floorptr), PROT_READ|PROT_WRITE);
+#endif
+
+}
+/** Check for FPU&RDTSC support
+ *  @return -1 on failure 0 on success
+ */
+extern inline int check_fpu_rdtsc()
+{
+	cputype = getcputype();
+	if ((cputype&((1<<0)+(1<<4))) != ((1<<0)+(1<<4)))
+		{ fputs("Sorry, this program requires FPU&RDTSC support (>=Pentium)", stderr); return(-1); }
+    else
+        return 0; // A okay
+}
+
