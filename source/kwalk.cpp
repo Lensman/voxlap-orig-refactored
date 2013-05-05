@@ -1,15 +1,6 @@
-#if 0 //To compile, type: "nmake kwalk.c"
-kwalk.exe: kwalk.obj voxlap5.obj v5.obj kplib.obj winmain.obj; link kwalk voxlap5 v5 kplib winmain ddraw.lib dinput.lib ole32.lib dxguid.lib user32.lib gdi32.lib comdlg32.lib /opt:nowin98
-	del winmain.obj
-kwalk.obj:   kwalk.c voxlap5.h sysmain.h; cl /c /J /TP kwalk.c     /Ox /Ob2 /G6Fy /Gs /MD
-voxlap5.obj: voxlap5.c voxlap5.h;         cl /c /J /TP voxlap5.c   /Ox /Ob2 /G6Fy /Gs /MD
-v5.obj:      v5.asm;                      ml /c /coff v5.asm
-kplib.obj:   kplib.c;                     cl /c /J /TP kplib.c     /Ox /Ob2 /G6Fy /Gs /MD
-winmain.obj: winmain.cpp;                 cl /c /J /TP winmain.cpp /Ox /Ob2 /G6Fy /Gs /MD /DNOSOUND
-!if 0
-#endif
+// VOXLAP engine by Ken Silverman (http://advsys.net/ken)
 
-//VOXLAP engine by Ken Silverman (http://advsys.net/ken)
+// This file has been modified from Ken Silverman's original release
 
 // write documentation! be sure to mention the "koosh" ball :)
 // add shift, scale, shear transformations
@@ -21,8 +12,20 @@ winmain.obj: winmain.cpp;                 cl /c /J /TP winmain.cpp /Ox /Ob2 /G6F
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+//#define SYSMAIN_C //if sysmain is compiled as C
 #include "sysmain.h"
+//#define VOXLAP_C  //if voxlap5 is compiled as C
 #include "voxlap5.h"
+//#define KPLIB_C  //if kplib is compiled as C
+#include "kplib.h"
+
+	//Ericson2314's dirty porting tricks
+#include "porthacks.h"
+
+	//Ken's short, general-purpose to-be-inlined functions mainly consisting of inline assembly are now here
+#include "ksnippits.h"
+
+extern void kfasorthinge (hingetype *, long, long *);
 
 long kfatim = -1, okfatim = -1;
 
@@ -30,6 +33,16 @@ dpoint3d ipos, istr, ihei, ifor;
 float vx5hx, vx5hy, vx5hz;
 long bstatus = 0, obstatus = 0;
 float fmousymul = -1.0;
+	//Timer global variables
+extern double odtotclk, dtotclk;
+extern float fsynctics;
+extern long totclk;
+extern long curspri;
+
+long sxlmallocsiz = 0, sxlind[1024+1];
+//vx5sprite spr[1024];
+char *sxlbuf = 0;
+
 
 long curfrm = 0;
 long grabspr = -1, grabseq = -1, grabseq2 = -1, setlimode = -1;
@@ -59,7 +72,7 @@ float fsynctics;
 long frameval[AVERAGEFRAMES], numframes = 0, averagefps = 0;
 
 char kfanam[MAX_PATH] = "", kv6nam[MAX_PATH] = "";
-char tempbuf[max(MAX_PATH+256,4096)];
+char tempbuf[MAX(MAX_PATH+256,4096)];
 
 	//LIMB information
 #define MAXSPRITES 1024
@@ -96,69 +109,11 @@ seqtyp seq[MAXSEQS]; //32K
 
 //---------------------------------------------------------------------------
 
-extern "C" long zbufoff;
-
-static _inline void ftol (float f, long *a)
-{
-	_asm
-	{
-		mov eax, a
-		fld f
-		fistp dword ptr [eax]
-	}
-}
-
-static _inline void fcossin (float a, float *c, float *s)
-{
-	_asm
-	{
-		fld a
-		fsincos
-		mov eax, c
-		fstp dword ptr [eax]
-		mov eax, s
-		fstp dword ptr [eax]
-	}
-}
-
-static _inline long scale (long a, long d, long c)
-{
-	_asm
-	{
-		mov eax, a
-		mov edx, d
-		mov ecx, c
-		imul edx
-		idiv ecx
-	}
-}
-
-static _inline long mulshr16 (long a, long d)
-{
-	_asm
-	{
-		mov eax, a
-		mov edx, d
-		imul edx
-		shrd eax, edx, 16
-	}
-}
-
-static _inline long shldiv16 (long a, long b)
-{
-	_asm
-	{
-		mov eax, a
-		mov ebx, b
-		mov edx, eax
-		shl eax, 16
-		sar edx, 16
-		idiv ebx
-	}
-}
+EXTERN_C long zbufoff;
 
 //----------------------  WIN file select code begins ------------------------
 
+/*
 char *stripdir (char *filnam)
 {
 	long i, j;
@@ -166,7 +121,7 @@ char *stripdir (char *filnam)
 		if ((filnam[i] == '/') || (filnam[i] == '\\')) j = i;
 	return(&filnam[j+1]);
 }
-
+*/
 static char relpathbase[MAX_PATH];
 static void relpathinit (char *st)
 {
@@ -205,25 +160,29 @@ static char *loadfileselect (char *mess, char *spec, char *defext)
 {
 	long i;
 	for(i=0;fileselectnam[i];i++) if (fileselectnam[i] == '/') fileselectnam[i] = '\\';
-	OPENFILENAME ofn =
-	{
-		sizeof(OPENFILENAME),ghwnd,0,spec,0,0,1,fileselectnam,MAX_PATH,0,0,(char *)(((long)relpathbase)&fileselect1stcall),mess,
-		OFN_PATHMUSTEXIST|OFN_FILEMUSTEXIST|OFN_HIDEREADONLY,0,0,defext,0,0,0
-	};
-	fileselect1stcall = 0; //Let windows remember directory after 1st call
-	if (!GetOpenFileName(&ofn)) return(0); else return(fileselectnam);
+	do {
+		OPENFILENAME ofn =
+		{
+			sizeof(OPENFILENAME),(HWND)gethwnd(),0,spec,0,0,1,fileselectnam,MAX_PATH,0,0,(char *)(((long)relpathbase)&fileselect1stcall),mess,
+			OFN_PATHMUSTEXIST|OFN_FILEMUSTEXIST|OFN_HIDEREADONLY,0,0,defext,0,0,0
+		};
+		fileselect1stcall = 0; //Let windows remember directory after 1st call
+		if (!GetOpenFileName(&ofn)) return(0); else return(fileselectnam);
+	} while (0);
 }
 static char *savefileselect (char *mess, char *spec, char *defext)
 {
 	long i;
 	for(i=0;fileselectnam[i];i++) if (fileselectnam[i] == '/') fileselectnam[i] = '\\';
-	OPENFILENAME ofn =
-	{
-		sizeof(OPENFILENAME),ghwnd,0,spec,0,0,1,fileselectnam,MAX_PATH,0,0,(char *)(((long)relpathbase)&fileselect1stcall),mess,
-		OFN_PATHMUSTEXIST|OFN_FILEMUSTEXIST|OFN_HIDEREADONLY|OFN_OVERWRITEPROMPT,0,0,defext,0,0,0
-	};
-	fileselect1stcall = 0; //Let windows remember directory after 1st call
-	if (!GetSaveFileName(&ofn)) return(0); else return(fileselectnam);
+	do {
+		OPENFILENAME ofn =
+		{
+			sizeof(OPENFILENAME),(HWND)gethwnd(),0,spec,0,0,1,fileselectnam,MAX_PATH,0,0,(char *)(((long)relpathbase)&fileselect1stcall),mess,
+			OFN_PATHMUSTEXIST|OFN_FILEMUSTEXIST|OFN_HIDEREADONLY|OFN_OVERWRITEPROMPT,0,0,defext,0,0,0
+		};
+		fileselect1stcall = 0; //Let windows remember directory after 1st call
+		if (!GetSaveFileName(&ofn)) return(0); else return(fileselectnam);
+		} while (0);
 }
 #endif
 
@@ -381,7 +340,7 @@ void floodsucksprite (kv6data *kv, long ox, long oy,
 				case 1: x = ox+1; y = oy; break;
 				case 2: x = ox; y = oy-1; break;
 				case 3: x = ox; y = oy+1; break;
-				default: __assume(0); //tells MSVC default can't be reached
+				default: _gtfo(); //tells MSVC default can't be reached
 			}
 			if ((unsigned long)x >= kv->xsiz) continue;
 			if ((unsigned long)y >= kv->ysiz) continue;
@@ -472,6 +431,7 @@ floodsuckend:;
 	numspr++;
 }
 
+/*
 void kfasorthinge (hingetype *h, long nh, long *hsort)
 {
 	long i, j, n;
@@ -503,6 +463,7 @@ void kfasorthinge (hingetype *h, long nh, long *hsort)
 		//Restore parents to original values
 	for(i=nh-1;i>=0;i--) h[i].parent = -2-h[i].parent;
 }
+*/
 
 long loadsplitkv6 (char *filnam)
 {
@@ -533,7 +494,7 @@ long loadsplitkv6 (char *filnam)
 	if (kv6toocomplex)
 	{
 		ddflip2gdi();
-		MessageBox(ghwnd,"WARNING: KV6 too complex for animation",prognam,MB_OK);
+		MessageBox((HWND)gethwnd(),"WARNING: KV6 too complex for animation",prognam,MB_OK);
 	}
 
 	numfrm = 1; seqnum = 0;
@@ -544,14 +505,14 @@ long loadsplitkv6 (char *filnam)
 	return(1);
 }
 
-extern void genperp (point3d *, point3d *, point3d *);
-extern void mat0 (point3d *, point3d *, point3d *, point3d *,
+void genperp (point3d *, point3d *, point3d *);
+void mat0 (point3d *, point3d *, point3d *, point3d *,
 						point3d *, point3d *, point3d *, point3d *,
 						point3d *, point3d *, point3d *, point3d *);
-extern void mat1 (point3d *, point3d *, point3d *, point3d *,
+void mat1 (point3d *, point3d *, point3d *, point3d *,
 						point3d *, point3d *, point3d *, point3d *,
 						point3d *, point3d *, point3d *, point3d *);
-extern void mat2 (point3d *, point3d *, point3d *, point3d *,
+void mat2 (point3d *, point3d *, point3d *, point3d *,
 						point3d *, point3d *, point3d *, point3d *,
 						point3d *, point3d *, point3d *, point3d *);
 
@@ -595,7 +556,7 @@ static long kfatime2seq (long tim)
 	return(a);
 }
 
-static long animsprite (long t, long ti)
+static long animsprite_kwalk (long t, long ti)
 {
 	long i, z, zz;
 
@@ -732,11 +693,11 @@ long initapp (long argc, char **argv)
 	GetCurrentDirectory(sizeof(snotbuf),snotbuf);
 	relpathinit(snotbuf);
 
-	xres = 1024; yres = 768; colbits = 32; fullscreen = 0; prognam = "KWALK";
+	xres = 640; yres = 480; colbits = 32; fullscreen = 0; prognam = "KWALK";
 	for(i=argc-1;i>0;i--)
 	{
 		if (argv[i][0] != '/') { argfilindex = i; continue; }
-		if (!stricmp(&argv[i][1],"win")) { fullscreen = 0; continue; }
+		if (!strcasecmp(&argv[i][1],"win")) { fullscreen = 0; continue; }
 		//if (argv[i][1] == '?') { showinfo(); return(-1); }
 		if ((argv[i][1] >= '0') && (argv[i][1] <= '9'))
 		{
@@ -801,11 +762,11 @@ long initapp (long argc, char **argv)
 
 void doframe ()
 {
-	vx5sprite *sp;
+	//vx5sprite *sp;
 	kv6voxtype *kp;
 	point3d tp, tp1, tp2, tp3, tp4, *tptr;
 	lpoint3d lp, grablp;
-	long i, j, k, x, y, z, zz, trat, frameplace, bpl, xdim, ydim, key;
+	long i, j, k, x, y, z, frameplace, bpl, xdim, ydim, key;
 	float f, fmousx, fmousy;
 	char *v;
 
@@ -871,7 +832,7 @@ void doframe ()
 				}
 				setlimb(j,k,hinge[j].htype,frmval[curfrm][j]);
 			}
-	
+
 			if (j < numspr)
 			{
 				if (!(numframes&3)) spr[grabspr].flags |= 1;
@@ -1134,9 +1095,9 @@ void doframe ()
 
 		//Print MAX FRAME RATE
 	ftol(1000.0/fsynctics,&frameval[numframes&(AVERAGEFRAMES-1)]);
-	for(j=AVERAGEFRAMES-1,i=frameval[0];j>0;j--) i = max(i,frameval[j]);
+	for(j=AVERAGEFRAMES-1,i=frameval[0];j>0;j--) i = MAX(i,frameval[j]);
 	averagefps = ((averagefps*3+i)>>2);
-	print4x6(0,0,0xc0c0c0,-1,"%.1f (%0.2fms)",(float)averagefps*.001,1000000.0/max((float)averagefps,1));
+	print4x6(0,0,0xc0c0c0,-1,"%.1f (%0.2fms)",(float)averagefps*.001,1000000.0/MAX((float)averagefps,1));
 
 	stopdirectdraw();
 	nextpage();
@@ -1149,7 +1110,7 @@ skipalldraw:;
 	if ((seqnum > 0) && ((unsigned long)kfatim < seq[seqnum-1].tim))
 	{     //Animation mode
 		ftol(fsynctics*1000.0,&i);
-		kfatim = animsprite(kfatim,i);
+		kfatim = animsprite_kwalk(kfatim,i);
 	}
 
 	if (keystatus[0x33]|keystatus[0x34]) //,.
@@ -1170,7 +1131,7 @@ skipalldraw:;
 	{
 		if (!bstatus)
 		{
-			f = min(vx5hx/vx5hz,1.0);
+			f = MIN(vx5hx/vx5hz,1.0);
 			dorthorotate(istr.z*.1,fmousy*f*.008*fmousymul,fmousx*f*.008,&istr,&ihei,&ifor);
 		}
 
@@ -1905,7 +1866,7 @@ skipalldraw:;
 				{
 					ddflip2gdi();
 					if (kv6toocomplex)
-						MessageBox(ghwnd,"WARNING: KV6 too complex for animation",prognam,MB_OK);
+						MessageBox((HWND)gethwnd(),"WARNING: KV6 too complex for animation",prognam,MB_OK);
 					else
 					{
 						if (v = (char *)savefileselect("SAVE animation...","*.KFA\0*.kfa\0All files (*.*)\0*.*\0\0","KFA"))

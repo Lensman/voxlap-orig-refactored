@@ -15,11 +15,18 @@ winmain.obj: winmain.cpp;                 cl /c /J /TP winmain.cpp /Ox /Ob2 /G6F
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "sysmain.h"
-#include "voxlap5.h"
+
+#define MAXSPRITES 1024
 #define SCISSORDIST 1.0
 #define STEREOMODE 0  //0:no stereo (normal mode), 1:CrystalEyes, 2:Nuvision
 #define USETDHELP 0 //0:Ken's notepad style help, 1:Tom's keyboard graphic help
+#define VOXSIZ VSID*VSID*128
+#include "sysmain.h"
+#include "voxlap5.h"
+#include "ksnippits.h"
+#include "kfile_io.h"
+#include "kfalling.h"
+#include "kmodelling.h"
 
 #ifndef _WIN32
 	#include <stdio.h>
@@ -27,7 +34,7 @@ winmain.obj: winmain.cpp;                 cl /c /J /TP winmain.cpp /Ox /Ob2 /G6F
 	#include <string.h>
 	#include <conio.h>
 	#include <dos.h>
-    
+
 	void limitrate ();
 	#pragma aux limitrate =\
 		"mov dx, 0x3da",\
@@ -39,6 +46,8 @@ winmain.obj: winmain.cpp;                 cl /c /J /TP winmain.cpp /Ox /Ob2 /G6F
 		"jz wait2",\
 		modify exact [eax edx]\
 		value
+#elif defined(_WIN32)
+#include <windows.h>
 #endif
 
 #define MAXBUL 1
@@ -46,14 +55,16 @@ long bulactive[MAXBUL] = {-1};
 dpoint3d bul[MAXBUL], bulvel[MAXBUL];
 
 	//KV6 sprite variables:
-#define MAXSPRITES 1024
+long sxlmallocsiz = 0, sxlind[MAXSPRITES+1];
 vx5sprite spr[MAXSPRITES];
-long sortorder[MAXSPRITES], numsprites = 0, curspri = -1;
+
+//vx5sprite spr[MAXSPRITES];
+long sortorder[MAXSPRITES], curspri = -1;
 float sortdist[MAXSPRITES];
 
 	//Sprite user messages:
 char *sxlbuf = 0;
-long sxlmallocsiz = 0, sxlind[MAXSPRITES+1];
+//long sxlmallocsiz = 0, sxlind[MAXSPRITES+1];
 	//sxlind: sxlind[0] is index to global userstring
 	//sxlind: 1 more for using offsets instead of lengths
 
@@ -65,7 +76,7 @@ float vx5hx, vx5hy, vx5hz;
 	//Timer global variables
 double odtotclk, dtotclk;
 float fsynctics;
-long totclk;
+//long totclk;
 
 	//FPS variables (integrated with timer handler)
 #define AVERAGEFRAMES 32
@@ -85,7 +96,6 @@ enum { DONTBACKUP=0,
 
 static long frameplace, bytesperline;
 
-extern "C" char *sptr[VSID*VSID];
 extern long *radar;
 extern long templongbuf[MAXZDIM];
 extern long backtag, backedup, bacx0, bacy0, bacx1, bacy1;
@@ -97,11 +107,8 @@ extern __int64 flashbrival;
 	//Sprite data for hanging lights:
 static kv6data *klight;
 
-//Low-level editing functions
-extern void scum (long, long, long, long, long *);
-extern void scumfinish ();
-extern long *scum2 (long, long);
-extern void scum2finish ();
+extern char relpathbase[MAX_PATH];
+
 
 extern long findpath (long *, long, lpoint3d *, lpoint3d *);
 #define PATHMAXSIZ 4096
@@ -109,13 +116,13 @@ long pathpos[PATHMAXSIZ], pathcnt = -1;
 lpoint3d pathlast;
 
 long capturecount = 0;
-char sxlfilnam[MAX_PATH+1] = "";
-char vxlfilnam[MAX_PATH+1] = "";
-char skyfilnam[MAX_PATH+1] = "";
+//char sxlfilnam[MAX_PATH+1] = "";
+//char vxlfilnam[MAX_PATH+1] = "";
+//char skyfilnam[MAX_PATH+1] = "";
 
 	//Displayed text message:
-char message[256] = {0};
-long messagetimeout = 0;
+//char message[256] = {0};
+//long messagetimeout = 0;
 
 	//Help text status
 static long helpmode = 0, helpleng, helpypos = 0;
@@ -141,6 +148,7 @@ long tsolid = 0, trot = 8, tedit = 0;
 char tfilenam[MAX_PATH+1];
 
 long cubedistweight[4] = {192,7,5,4};
+extern tiletype gdd;
 
 long colfnum = 2;
 void *colfunclst[] =
@@ -149,156 +157,6 @@ void *colfunclst[] =
 	sphcolfunc,woodcolfunc,pngcolfunc
 };
 #define numcolfunc (sizeof(colfunclst)>>2)
-
-#ifdef __WATCOMC__
-
-void ftol (float, long *);
-#pragma aux ftol =\
-	"fistp dword ptr [eax]"\
-	parm [8087][eax]\
-
-void dcossin (double, double *, double *);
-#pragma aux dcossin =\
-	"fsincos"\
-	"fstp qword ptr [eax]"\
-	"fstp qword ptr [ebx]"\
-	parm [8087][eax][ebx]\
-
-void clearbuf (void *, long, long);
-#pragma aux clearbuf =\
-	"rep stosd"\
-	parm [edi][ecx][eax]\
-	modify exact [edi ecx]\
-	value
-
-void mmxcoloradd (long *);
-#pragma aux mmxcoloradd =\
-	".686"\
-	"movd mm0, [eax]"\
-	"paddusb mm0, flashbrival"\
-	"movd [eax], mm0"\
-	parm nomemory [eax]\
-	modify exact \
-	value
-
-void mmxcolorsub (long *);
-#pragma aux mmxcolorsub =\
-	".686"\
-	"movd mm0, [eax]"\
-	"psubusb mm0, flashbrival"\
-	"movd [eax], mm0"\
-	parm nomemory [eax]\
-	modify exact \
-	value
-
-long mulshr24 (long, long);
-#pragma aux mulshr24 =\
-	"imul edx",\
-	"shrd eax, edx, 24",\
-	parm nomemory [eax][edx]\
-	modify exact [eax edx]\
-	value [eax]
-
-long umulshr32 (long, long);
-#pragma aux umulshr32 =\
-	"mul edx"\
-	parm nomemory [eax][edx]\
-	modify exact [eax edx]\
-	value [edx]
-
-void emms ();
-#pragma aux emms =\
-	".686"\
-	"emms"\
-	parm nomemory []\
-	modify exact []\
-	value
-
-#else
-
-#pragma warning(disable:4799) //I know how to use EMMS
-
-static _inline void ftol (float f, long *a)
-{
-	_asm
-	{
-		mov eax, a
-		fld f
-		fistp dword ptr [eax]
-	}
-}
-
-static _inline void dcossin (double a, double *c, double *s)
-{
-	_asm
-	{
-		fld a
-		fsincos
-		mov eax, c
-		fstp qword ptr [eax]
-		mov eax, s
-		fstp qword ptr [eax]
-	}
-}
-
-static _inline void clearbuf (void *d, long c, long a)
-{
-	_asm
-	{
-		mov edi, d
-		mov ecx, c
-		mov eax, a
-		rep stosd
-	}
-}
-
-static _inline void mmxcoloradd (long *a)
-{
-	_asm
-	{
-		mov eax, a
-		movd mm0, [eax]
-		paddusb mm0, flashbrival
-		movd [eax], mm0
-	}
-}
-
-static _inline void mmxcolorsub (long *a)
-{
-	_asm
-	{
-		mov eax, a
-		movd mm0, [eax]
-		psubusb mm0, flashbrival
-		movd [eax], mm0
-	}
-}
-
-static _inline long mulshr24 (long a, long d)
-{
-	_asm
-	{
-		mov eax, a
-		mov edx, d
-		imul edx
-		shrd eax, edx, 24
-	}
-}
-
-static _inline long umulshr32 (long a, long d)
-{
-	_asm
-	{
-		mov eax, a
-		mov edx, d
-		mul edx
-		mov eax, edx
-	}
-}
-
-static _inline void emms () { _asm emms }
-
-#endif
 
 	//RGB color selection variables
 #define CGRAD 64
@@ -395,6 +253,8 @@ beg:
 
 #endif
 
+
+
 void initrgbcolselect ()
 {
 	long x, y, oy, c, oc, fx, fy;
@@ -480,7 +340,7 @@ void rgb2cub (long dacol, long *mx, long *my, long *dabri)
 
 void drawcolorbar ()
 {
-	long i, j, x, y, xx, yy, z, r, g, b, l;
+	long x, y, xx, yy, z, r, g, b, l;
 
 	l = mulshr24(spik,gbri); x = clx[0]; z = 1; yy = -CGRAD*cpik;
 	y = (yres-CGRAD*2-4)*bytesperline+((xres-CGRAD)<<2)+frameplace;
@@ -520,44 +380,10 @@ void drawcolorbar ()
 
 		x = clx[z++];
 	} while (z < clcnt);
-	emms();
+	clearMMX();
 }
 
-static char relpathbase[MAX_PATH];
-static void relpathinit (char *st)
-{
-	long i;
 
-	for(i=0;st[i];i++) relpathbase[i] = st[i];
-	if ((i) && (relpathbase[i-1] != '/') && (relpathbase[i-1] != '\\'))
-		relpathbase[i++] = '\\';
-	relpathbase[i] = 0;
-}
-
-	//Makes path relative to voxed directory (for sxl).
-	//(relpathbase is "C:\kwin\voxlap\" on my machine.)
-	//Examples:
-	//   "C:\KWIN\VOXLAP\KV6\ANVIL.KV6" -> "KV6\ANVIL.KV6"
-	//   "KV6\ANVIL.KV6" -> "KV6\ANVIL.KV6"
-static char *relpath (char *st)
-{
-	long i;
-	char ch0, ch1;
-
-	for(i=0;relpathbase[i];i++)
-	{
-		ch0 = st[i];
-		if ((ch0 >= 'a') && (ch0 <= 'z')) ch0 -= 32;
-		if (ch0 == '/') ch0 = '\\';
-
-		ch1 = relpathbase[i];
-		if ((ch1 >= 'a') && (ch1 <= 'z')) ch1 -= 32;
-		if (ch1 == '/') ch1 = '\\';
-
-		if (ch0 != ch1) return(st);
-	}
-	return(&st[i]);
-}
 
 //----------------------  WIN file select code begins ------------------------
 
@@ -572,7 +398,7 @@ static char *loadfileselect (char *mess, char *spec, char *defext)
 	for(i=0;fileselectnam[i];i++) if (fileselectnam[i] == '/') fileselectnam[i] = '\\';
 	OPENFILENAME ofn =
 	{
-		sizeof(OPENFILENAME),NULL,0,spec,0,0,1,fileselectnam,MAX_PATH,0,0,(char *)(((long)relpathbase)&fileselect1stcall),mess,
+		sizeof(OPENFILENAME),(HWND)gethwnd(),0,spec,0,0,1,fileselectnam,MAX_PATH,0,0,(char *)(((long)relpathbase)&fileselect1stcall),mess,
 		/*OFN_PATHMUSTEXIST|OFN_FILEMUSTEXIST|*/ OFN_HIDEREADONLY,0,0,defext,0,0,0
 	};
 	fileselect1stcall = 0; //Let windows remember directory after 1st call
@@ -584,7 +410,7 @@ static char *savefileselect (char *mess, char *spec, char *defext)
 	for(i=0;fileselectnam[i];i++) if (fileselectnam[i] == '/') fileselectnam[i] = '\\';
 	OPENFILENAME ofn =
 	{
-		sizeof(OPENFILENAME),NULL,0,spec,0,0,1,fileselectnam,MAX_PATH,0,0,(char *)(((long)relpathbase)&fileselect1stcall),mess,
+		sizeof(OPENFILENAME),(HWND)gethwnd(),0,spec,0,0,1,fileselectnam,MAX_PATH,0,0,(char *)(((long)relpathbase)&fileselect1stcall),mess,
 		OFN_PATHMUSTEXIST|OFN_FILEMUSTEXIST|OFN_HIDEREADONLY|OFN_OVERWRITEPROMPT,0,0,defext,0,0,0
 	};
 	fileselect1stcall = 0; //Let windows remember directory after 1st call
@@ -840,7 +666,7 @@ static char *fileselect (char *filespec)
 
 void voxfindsuck (long cx, long cy, long cz, long *ox, long *oy, long *oz)
 {
-	long i, j, k, d, x, y, z, xx, yy, zz;
+	long j, k, x, y, z, xx, yy, zz;
 
 	j = 0x7fffffff; (*ox) = cx; (*oy) = cy; (*oz) = cz;
 	for(x=-4;x<=4;x++)
@@ -862,9 +688,9 @@ void voxfindsuck (long cx, long cy, long cz, long *ox, long *oy, long *oz)
 			}
 }
 
-void voxfindspray (long cx, long cy, long cz, long *ox, long *oy, long *oz)
+void voxfindspray (const long &cx, const long &cy, const long &cz, long *ox, long *oy, long *oz)
 {
-	long i, j, k, d, x, y, z, xx, yy, zz;
+	long j, k, x, y, z, xx, yy, zz;
 
 	j = 0x7fffffff; (*ox) = cx; (*oy) = cy; (*oz) = cz;
 	for(x=-4;x<=4;x++)
@@ -1014,7 +840,7 @@ void photonflash (dpoint3d *ipos, long brightness, long numrays)
 				}
 			}
 		}
-		emms();
+		clearMMX();
 	}
 }
 
@@ -1076,7 +902,6 @@ void voxredraw ()
 {
 	lpoint3d p, p2;
 	long i, j, k, l, m, x, y, z, xx, yy, zz;
-	float f;
 	char *v;
 
 	vx5.colfunc = (long (*)(lpoint3d *))colfunclst[colfnum];
@@ -1466,7 +1291,7 @@ long gridalignplane (point3d *p, point3d *o, point3d *n, long gmode)
 	//Warning: Depends on ipos and ifor (globals)
 void gridalignline (point3d *p, long daxmov, long gmode)
 {
-	float t, ox, oy, oz;
+	float t;
 
 		//   Derivation of math:
 		//   Problem: Finding closest point between 2 lines
@@ -1849,68 +1674,9 @@ voxedloadsxlskip:;
 	return(1);
 }
 
-void floatprint (float f, FILE *fil)
-{
-	char buf[32];
-
-	sprintf(buf,"%g",f);
-	if ((buf[0] == '0') && (buf[1] == '.'))
-		fprintf(fil,"%s",&buf[1]); //"0." -> "."
-	else if ((buf[0] == '-') && (buf[1] == '0') && (buf[2] == '.'))
-		{ buf[1] = '-'; fprintf(fil,"%s",&buf[1]); } //"-0." -> "-."
-	else fprintf(fil,"%s",buf);
-}
-
-void savesxl (char *sxlnam)
-{
-	FILE *fil;
-	long i, j, k;
-
-	if (!(fil = fopen(sxlnam,"wb"))) return;
-	fprintf(fil,"%s\r\n",relpath(vxlfilnam));
-	fprintf(fil,"%s\r\n",relpath(skyfilnam));
-
-	i = 0; goto savesxlskip;
-	do
-	{
-		if (spr[i].voxnum)
-		{
-			if (spr[i].flags&2) j = spr[i].kfaptr->namoff;
-								else j = spr[i].voxnum->namoff;
-			fprintf(fil,"%s,",relpath(getkfilname(j)));
-		} else fprintf(fil,"DOT,");
-		floatprint(spr[i].p.x,fil); fputc(',',fil);
-		floatprint(spr[i].p.y,fil); fputc(',',fil);
-		floatprint(spr[i].p.z,fil); fputc(',',fil);
-		floatprint(spr[i].s.x,fil); fputc(',',fil);
-		floatprint(spr[i].s.y,fil); fputc(',',fil);
-		floatprint(spr[i].s.z,fil); fputc(',',fil);
-		floatprint(spr[i].h.x,fil); fputc(',',fil);
-		floatprint(spr[i].h.y,fil); fputc(',',fil);
-		floatprint(spr[i].h.z,fil); fputc(',',fil);
-		floatprint(spr[i].f.x,fil); fputc(',',fil);
-		floatprint(spr[i].f.y,fil); fputc(',',fil);
-		floatprint(spr[i].f.z,fil); fputc(13,fil); fputc(10,fil);
-savesxlskip:;
-			//User string
-		for(j=sxlind[i],k=0;j<sxlind[i+1];j++)
-		{
-			if (!sxlbuf[j]) { fprintf(fil,"\r\n"); k = 0; continue; }
-			if (!k) { fputc(32,fil); k = 1; }
-			fputc(sxlbuf[j],fil);
-		}
-
-		i++;
-	} while (i < numsprites);
-	fprintf(fil,"end\r\n");
-	fclose(fil);
-
-	sprintf(message,"Saved %s",sxlnam); messagetimeout = totclk+4000;
-}
-
 void drawarrows (long xx, long yy, long zz, double iforx, double ifory, long col)
 {
-	long x, y, j, k;
+	long x, y, j;
 
 		//   V0V1V2V3
 		//H0   зд©        (-x,-y)
@@ -2230,6 +1996,7 @@ long notepadinput ()
 	obstatus = bstatus; readmouse(&fmousx,&fmousy,&bstatus);
 	fcmousx = min(max(fcmousx+fmousx,3),xres-3); ftol(fcmousx-.5,&cmousx);
 	fcmousy = min(max(fcmousy+fmousy,4),yres-4); ftol(fcmousy-.5,&cmousy);
+
 	if ((~obstatus)&bstatus&1) //LMB (moves text cursor)
 	{
 			//Find dimensions of text box
@@ -2268,7 +2035,7 @@ long notepadinput ()
 #if (USETDHELP != 0)
 #include "kbdhelp.h"
 
-static struct {
+static struct kbdh {
 	long tf, tp, tx, ty; // tile
 	float x, y;
 	float cx, cy;
@@ -2450,8 +2217,6 @@ void helpdraw ()
 
 void uninitapp ()
 {
-	long i;
-
 	if (sxlbuf) { free(sxlbuf); sxlbuf = 0; }
 	if (helpbuf) { free(helpbuf); helpbuf = 0; }
 
@@ -2472,12 +2237,12 @@ void doframe ()
 {
 	vx5sprite tempspr;
 	kv6voxtype *kp;
-	dpoint3d dp, dp2, dp3;
+	dpoint3d dp;
 	point3d tp;
 	lpoint3d lp, lipos; //lipos for speed purposes only
-	float f, t, ox, oy, oz, dx, dy, dz, rr[9], fmousx, fmousy;
-	long i, j, k, l, m, x, y, z, xx, yy, zz, r, g, b, bakcol;
-	char snotbuf[max(MAX_PATH+1,256)], ch, *v;
+	float f, t, ox, oy, oz, dx, dy, dz, fmousx, fmousy;
+	long i, j, k, l, m, x, y, z, xx, yy, zz, bakcol;
+	char snotbuf[max(MAX_PATH+1,256)], *v;
 
 	startdirectdraw(&frameplace,&bytesperline,&x,&y);
 	voxsetframebuffer(frameplace,bytesperline,x,y);
@@ -2489,7 +2254,7 @@ void doframe ()
 	ftol(ipos.z-.5,&lipos.z);
 
 	while (isvoxelsolid(lipos.x,lipos.y,lipos.z))
-		{ ipos.z--; ftol(ipos.z-.5,&lipos.z); }
+		{ ipos.z--; ftol(ipos.z-.25,&lipos.z); }
 
 	//--------------------------------
 	hitscan(&ipos,&ifor,&hit,&hind,&hdir);
@@ -2899,12 +2664,22 @@ void doframe ()
 	if (colselectmode)
 	{
 		drawcolorbar();
-		drawpoint2d(cmousx,cmousy,(rand()<<8)^rand());
+		//drawpoint2d(cmousx,cmousy,(rand()<<8)^rand());
+		drawline2d( cmousx-4, cmousy, cmousx+4, cmousy, rand() );
+		drawline2d( cmousx, cmousy-4, cmousx, cmousy+4, rand() );
 	}
 	else
 	{
 		if (hind) *hind = bakcol;
-		drawpoint2d(xres>>1,yres>>1,rand());
+		drawline2d( (xres>>1)-4, (yres>>1), (xres>>1)+4, (yres>>1), rand() );
+		drawline2d( (xres>>1), (yres>>1)-4, (xres>>1), (yres>>1)+4, rand() );
+		
+		/*drawpoint2d(xres>>1,yres>>1,rand());
+	    drawpoint2d((xres>>1)+1,yres>>1,rand());
+		drawpoint2d((xres>>1)-1,yres>>1,rand());
+		drawpoint2d(xres>>1,(yres>>1)+1,rand());
+		drawpoint2d(xres>>1,(yres>>1)-1,rand());
+		*/
 	}
 
 	//--------------------------------
@@ -3085,7 +2860,7 @@ void doframe ()
 			else
 			{
 				vx5.mipscandist += (vx5.mipscandist>>2);
-				if (vx5.mipscandist > 1536) vx5.mipscandist = 1536;
+				if (vx5.mipscandist > 2048) vx5.mipscandist = 2048;
 			}
 		}
 		else
@@ -3098,7 +2873,7 @@ void doframe ()
 			else
 			{
 				vx5.maxscandist += (vx5.maxscandist>>2);
-				if (vx5.maxscandist > 1536) vx5.maxscandist = 1536;
+				if (vx5.maxscandist > 2048) vx5.maxscandist = 2048;
 			}
 		}
 		sprintf(message,"mip=%d max=%d",vx5.mipscandist,vx5.maxscandist);
@@ -3285,6 +3060,7 @@ void doframe ()
 
 	if (keystatus[0x13]) { keystatus[0x13] = 0; angincmode ^= 1; if (!angincmode) vx5.anginc = 1; }  //R
 	if (keystatus[0x1e]) { keystatus[0x1e] = 0; anglemode ^= 1; fixanglemode(); } //A
+
 
 	if (keystatus[0xe])    //Backspace (delete most recent cursor)
 	{
@@ -3986,7 +3762,7 @@ void doframe ()
 		{
 			strcpy(tfilenam,(char *)v);
 			if (vx5.pic) { free(vx5.pic); vx5.pic = 0; }
-			kpzload(tfilenam,&i,&vx5.bpl,&vx5.xsiz,&vx5.ysiz); vx5.pic = (long *)i;
+			kpzload(tfilenam,(int*)&i,(int*)&vx5.bpl,(int*)&vx5.xsiz,(int*)&vx5.ysiz); vx5.pic = (long *)i;
 			vx5.picmode = 0;
 			if (((backtag == SETCYL) || (backtag == SETELL) || (backtag == SETLAT)) && (backedup >= 0))
 			{
@@ -4064,7 +3840,7 @@ void doframe ()
 		{
 			strcpy(tfilenam,(char *)v);
 			if (vx5.pic) { free(vx5.pic); vx5.pic = 0; }
-			kpzload(tfilenam,&i,&vx5.bpl,&vx5.xsiz,&vx5.ysiz); vx5.pic = (long *)i;
+			kpzload(tfilenam,(int*)&i,(int*)&vx5.bpl,(int*)&vx5.xsiz,(int*)&vx5.ysiz); vx5.pic = (long *)i;
 			for(y=0;y<(vx5.ysiz<<2);y++)
 			{
 				dx = (float)(vx5.xsiz<<2); dy = (float)((y<<1)-(vx5.ysiz<<2));
@@ -4108,14 +3884,14 @@ void doframe ()
 			ddflip2gdi(); strcpy(fileselectnam,vxlfilnam);
 
 			wsprintf(snotbuf,"Save .VXL before loading new file?");
-			if (MessageBox(NULL,snotbuf,"VOXED",MB_YESNO) == IDYES)
+			if (MessageBox((HWND)gethwnd(),snotbuf,"VOXED",MB_YESNO) == IDYES)
 				if (v = (char *)savefileselect("SAVE VXL file AS...","*.VXL\0*.vxl\0All files (*.*)\0*.*\0\0","VXL"))
 					savevxl(v,&ipos,&istr,&ihei,&ifor);
 
 			wsprintf(snotbuf,"Save .SXL before loading new file?");
-			if (MessageBox(NULL,snotbuf,"VOXED",MB_YESNO) == IDYES)
+			if (MessageBox((HWND)gethwnd(),snotbuf,"VOXED",MB_YESNO) == IDYES)
 				if (v = (char *)savefileselect("SAVE SXL file AS...","*.SXL\0*.sxl\0All files (*.*)\0*.*\0\0","SXL"))
-					savesxl(v);
+					savesxl(v, spr, sxlind);
 
 			if (v = (char *)loadfileselect("LOAD SXL/VXL file...","SXL, VXL\0*.sxl;*.vxl\0All files (*.*)\0*.*\0\0","SXL"))
 			{
@@ -4170,7 +3946,7 @@ void doframe ()
 			if (v = (char *)savefileselect("SAVE SXL file AS...","*.SXL\0*.sxl\0All files (*.*)\0*.*\0\0","SXL"))
 			{
 				strcpy(sxlfilnam,v);
-				savesxl(sxlfilnam);
+				savesxl(sxlfilnam, spr, sxlind);
 			}
 		}
 	}
@@ -4222,8 +3998,8 @@ void doframe ()
 	if (keystatus[0x44]) //F10: mip testing... TEMP HACK!!!
 	{
 		keystatus[0x44] = 0;
-		if (vx5.vxlmipuse > 1)      { vx5.vxlmipuse = 1; vx5.maxscandist = 256; }
-		else { vx5.mipscandist = 128; vx5.vxlmipuse = 9; vx5.maxscandist = 1536; }
+		if (vx5.vxlmipuse > 1)      { vx5.vxlmipuse = 1; vx5.maxscandist = 128; }
+		else { vx5.mipscandist = 128; vx5.vxlmipuse = 9; vx5.maxscandist = 2048; }
 		genmipvxl(0,0,VSID,VSID);
 	}
 
@@ -4275,10 +4051,10 @@ void doframe ()
 		if (!vx5.lightmode)
 		{
 			voxdontrestore();
-	
+
 			if (keystatus[0x38]|keystatus[0xb8]) flashbrival = (0xff<<24);
 													  else flashbrival = (0x10<<24);
-	
+
 				//Darken all colors
 			x = VSID; y = VSID; i = 0;
 			for(j=0;j<gmipnum;j++) { i += x*y; x >>= 1; y >>= 1; }
@@ -4291,7 +4067,7 @@ void doframe ()
 
 				//(*(long *)&v[j<<2]) = colormul(*(long *)&v[j<<2],256-64);
 			}
-			emms();
+			clearMMX();
 		}
 	}
 
@@ -4643,6 +4419,8 @@ long initapp (long argc, char **argv)
 
 	prognam = "VOXED by Ken Silverman";
 	xres = 640; yres = 480; colbits = 32; fullscreen = 0;
+	vx5.fogcol = -1;//0x444444; //vx5.maxscandist = 768; //TEMP HACK!!!
+
 	for(i=argc-1;i>0;i--)
 	{
 		if (argv[i][0] != '/') { argfilindex = i; continue; }
@@ -4755,8 +4533,8 @@ long initapp (long argc, char **argv)
 	fixanglemode();
 	setsideshades(0,28,8,24,12,12);
 
-	//if (!skyfilnam[0]) strcpy(skyfilnam,"png/voxsky.png");
-	if (skyfilnam[0]) loadsky(skyfilnam);
+	if (!skyfilnam[0]) strcpy(skyfilnam,"png/voxsky.png");
+	//if (skyfilnam[0]) loadsky("skyfilnam");
 
 	if (!helpmode)
 #if (USETDHELP == 0)

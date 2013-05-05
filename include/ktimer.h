@@ -1,8 +1,14 @@
-#ifndef KTIMER_H
-#define KTIMER_H
+#pragma once
+
 /** Generic, high precision timer functions */
 //================== Fast & accurate TIMER FUNCTIONS begins ==================
 #include "porthacks.h"
+
+#ifdef _WIN32
+    #include <windows.h>
+#else
+    #include <sys/time.h>
+#endif
 
 static __int64 pertimbase, rdtimbase, nextimstep;
 static double perfrq, klockmul, klockadd, klocksub;
@@ -19,7 +25,8 @@ static MUST_INLINE uint64_t rdtsc64(void)
 }
 
 #if 0
-
+extern void initklock ();
+extern void readklock (double *tim);
 #if defined(__WATCOMC__)
 __int64 rdtsc64 ();
 #pragma aux rdtsc64 = "rdtsc" value [edx eax] modify nomemory parm nomemory;
@@ -51,7 +58,23 @@ void readklock (double *tim)
 	(*tim) = ((double)q)*klockmul + klockadd;
 }
 #elif defined(__GNUC__)
+timeval start_time;
+timeval end_time;
 
+void initklock(){
+    gettimeofday(&start_time, NULL);
+}
+
+void readklock (double *tim)
+{
+    double time_micro_sec;
+    gettimeofday(&end_time, NULL);
+    // start time and end time in millisec
+    double start_ms = (start_time.tv_sec * 1000000.0) + start_time.tv_usec;
+    double end_ms = (end_time.tv_sec * 1000000.0) + end_time.tv_usec;
+
+    (*tim) = (double) end_ms - start_ms;
+}
 
 #else
 #error Fatal : No rdtsc64 function defined.
@@ -59,4 +82,4 @@ void readklock (double *tim)
 
 #endif //0
 //=================== Fast & accurate TIMER FUNCTIONS ends ===================
-#endif //KTIMER_H
+

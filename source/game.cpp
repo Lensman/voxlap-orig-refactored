@@ -1,22 +1,28 @@
-#if 0
-game.exe: game.obj voxlap5.obj v5.obj kplib.obj winmain.obj game.c; link game voxlap5 v5 kplib winmain ddraw.lib dinput.lib ole32.lib dxguid.lib user32.lib gdi32.lib /opt:nowin98
-game.obj: game.c voxlap5.h sysmain.h; cl /c /J /TP game.c      /Ox /Ob2 /G6Fy /Gs /MD /QIfist
-voxlap5.obj: voxlap5.c voxlap5.h;     cl /c /J /TP voxlap5.c   /Ox /Ob2 /G6Fy /Gs /MD
-v5.obj: v5.asm; ml /c /coff v5.asm
-kplib.obj: kplib.c;                   cl /c /J /TP kplib.c     /Ox /Ob2 /G6Fy /Gs /MD
-winmain.obj: winmain.cpp sysmain.h;   cl /c /J /TP winmain.cpp /Ox /Ob2 /G6Fy /Gs /MD /DUSEKZ /DZOOM_TEST
-!if 0
-#endif
-
-//VOXLAP engine by Ken Silverman (http://advsys.net/ken)
+// VOXLAP engine by Ken Silverman (http://advsys.net/ken)
+// This file has been modified from Ken Silverman's original release
 
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+//#define SYSMAIN_C //if sysmain is compiled as C
 #include "sysmain.h"
+//#define VOXLAP_C  //if voxlap5 is compiled as C
 #include "voxlap5.h"
+//#define KPLIB_C  //if kplib is compiled as C
+#include "kplib.h"
 
+	//Ericson2314's dirty porting tricks
+#include "porthacks.h"
+
+	//Ken's short, general-purpose to-be-inlined functions mainly consisting of inline assembly are now here
+#include "ksnippits.h"
+#include "kfalling.h"
+
+
+#define KSND_3D 1
+#define KSND_MOVE 2
+#define KSND_LOOP 4
 	//NUMSECRETS:actual num,1:1,2:1,4:2,8:5,16:8,32:14,64:26,128:49,256:87
 	//512:168,1024:293,2048:480,4096:711,8192:931
 #define NUMSECRETS 8
@@ -60,17 +66,17 @@ char *sxlbuf = 0;
 long sxleng = 0;
 
 	//Player position variables:
-#define CLIPRAD 5
+#define CLIPRAD 0.75
 dpoint3d ipos, istr, ihei, ifor, ivel;
 
 	//Debris variables:
 #define MAXDBRI 2048
 typedef struct { point3d p, v; long tim, col; } dbritype;
-dbritype dbri[MAXDBRI];
+__ALIGN(16) dbritype dbri[MAXDBRI];
 long dbrihead = 0, dbritail = 0;
 
 	//Tile variables: (info telling where status bars & menus are stored)
-typedef struct { long f, p, x, y; } tiletype;
+//typedef struct { long f, p, x, y; } tiletype;
 #define FONTXDIM 9
 #define FONTYDIM 12
 tiletype numb[11], asci[128+18]; //Note: 0-31 of asci unused (512 wasted bytes)
@@ -78,8 +84,11 @@ tiletype target;
 long showtarget = 1;
 
 	//User message:
-char message[256] = {0}, typemessage[256] = {0};
-long messagetimeout = 0, typemode = 0, quitmessagetimeout = 0x80000000;
+extern char message[256];
+
+char typemessage[256] = {0};
+extern long messagetimeout;
+long typemode = 0, quitmessagetimeout = 0x80000000;
 
 #define MAXSPRITES 1024 //NOTE: this shouldn't be static!
 #ifdef __cplusplus
@@ -100,9 +109,13 @@ typedef struct
 	long owner, tim, tag;
 } spritetype;
 #endif
+//spritetype tempspr, woodspr, ospr2goal, spr2goal;
 
 spritetype spr[MAXSPRITES], tempspr, woodspr, ospr2goal, spr2goal;
-long numsprites, spr2goaltim = 0;
+
+
+extern long numsprites;
+long spr2goaltim = 0;
 //long sortorder[MAXSPRITES];
 
 long curvystp = (~1); //<0=don't draw, 0=draw normal, 1=draw curvy&use this step size
@@ -116,7 +129,7 @@ long obstatus = 0, bstatus = 0;
 	//Timer global variables:
 double odtotclk, dtotclk;
 float fsynctics;
-long totclk;
+extern long totclk;
 
 	//FPS counter
 #define FPSSIZ 64
@@ -126,7 +139,7 @@ long fpsometer[FPSSIZ], fpsind[FPSSIZ], numframes = 0, showfps = 0;
 	//unitfalldelay[i] = (long)(sqrt((i+1)*2/gravity)*1000)
 	//                  -(long)(sqrt( i   *2/gravity)*1000);
 	//  where: gravity = 128 units/sec^2
-char unitfalldelay[255] =
+static const char unitfalldelay[255] =
 {
   125,51,40,34,29,27,24,23,22,20,19,19,17,17,17,16,
 	15,15,14,15,13,14,13,13,13,12,12,12,12,11,11,12,
@@ -140,15 +153,15 @@ char unitfalldelay[255] =
 };
 point3d lastbulpos, lastbulvel; //hack to remember last bullet exploded
 
-long rubble[] =
+const long rubble[] =
 {
 0x5111111,0x5121111,0x5131111,0x6111111,0x6121111,0x6131111,0x7111111,0x7121011,0x8111010,0x8121010,0x9111010,0x9121010,0xc101212,0xc111113,0xc121112,0xd101314,0xd111215,0xd121214,0xd131213,0xe101517,0xe111317,0xe121317,0xe131315,0xf0f1719,0xf10151a,0xf11141a,0xf121319,0xf131317,0xf141414,0x100e181c,0x100f171c,0x1010151c,0x1011131c,0x1012131b,0x10131319,0x10141315,0x10151314,0x110c1b1c,0x110d191c,0x110e181c,0x110f171c,0x1110151c,0x1111121c,0x11120a0a,0x1112121c,0x1113090b,0x1113111c,0x1114080b,0x11141216,0x1115080a,0x11151214,0x11160809,0x11161213,0x11171313,0x120b1b1c,0x120c1a1c,0x120d191c,0x120e181c,0x120f080c,0x120f161c,0x1210070e,0x1210151c,0x1211070f,0x1211141c,0x12120610,0x1212131c,0x1213060e,0x1213141c,0x1214060d,0x12141415,0x1214191b,0x1215060c,0x1216070b,0x1217080a,0x12171212,0x12181112,0x12191212,0x130b1b1c,0x130c1a1c,0x130d0a0b,0x130d181c,0x130e090c,0x130e171c,0x130f070d,0x130f151c,0x1310070e,0x1310141c,0x1311060e,0x1311141c,0x1312060e,0x1312141d,0x1313050e,0x1313161d,0x1314050d,0x1314191d,0x1315060c,0x1316060b,0x1317070b,0x13180809,0x140a1b1b,0x140b1a1c,0x140c191c,0x140d0a0b,0x140d171c,0x140e080c,0x140e161c,0x140f070d,0x140f141c,0x1410060e,0x1410131d,0x1411060e,0x1411141d,0x1412050e,0x1412151d,0x1413050d,0x1413161d,0x1414050d,0x1414181d,0x1415050c,0x1416060b,0x1417060b,0x1418080a,0x150a1a1b,0x150b191c,0x150c171c,0x150d090b,0x150d151c,0x150e080c,0x150e141c,0x150f070d,0x150f131c,0x1510060d,0x1510121d,0x1511050e,0x1511131d,0x1512050d,0x1512141d,0x1513050d,0x1513161d,0x1514050c,0x1514181d,0x1515050c,0x15151c1d,0x1516060b,0x1517060b,0x1518070a,0x15190909,0x16091a1b,0x160a191b,0x160b171c,0x160c151c,0x160d090a,0x160d141c,0x160e080c,0x160e131c,0x160f070d,0x160f121d,0x1610060d,0x1610111d,0x1611050e,0x1611121d,0x1612050d,0x1612131d,0x1613050d,0x1613151d,0x1614050c,0x1614171d,0x1615050c,0x16151b1d,0x1616060b,0x1617060b,0x1618070a,0x1709191b,0x170a171b,0x170b161c,0x170c141c,0x170d090a,0x170d131c,0x170e080c,0x170e111c,0x170f070d,0x170f101d,0x1710061d,0x1711060e,0x1711101d,0x1712050d,0x1712121d,0x1713050d,0x1713141d,0x1714050c,0x1714171d,0x1715050b,0x17151a1d,0x1716060b,0x1717060a,0x1718080a,0x1808191a,0x1809171b,0x180a161b,0x180b141c,0x180c131c,0x180d0a0a,0x180d111c,0x180e090c,0x180e101c,0x180f081c,0x1810071d,0x1811061d,0x1812060e,0x1812111d,0x1813050d,0x1813131d,0x1814060c,0x1814151d,0x1815060b,0x18151a1d,0x1816060b,0x18161d1d,0x1817070a,0x1818080a,0x19071919,0x1908181a,0x1909161b,0x190a141b,0x190b131b,0x190c111c,0x190d0a0a,0x190d101c,0x190e0a1c,0x190f081c,0x1910071c,0x1911071d,0x1912061d,0x1913060d,0x1913111d,0x1914060c,0x1914131d,0x1915060b,0x1915191d,0x1916070b,0x19161c1d,0x1917080a,0x1a071819,0x1a08161a,0x1a09151a,0x1a0a131b,0x1a0b111b,0x1a0c101b,0x1a0d0b0b,0x1a0d0e1c,0x1a0e0b1c,0x1a0f0a1c,0x1a10091c,0x1a11081c,0x1a12071c,0x1a13071d,0x1a14070d,0x1a14121d,0x1a15080c,0x1a15171c,0x1a16080b,0x1a161b1c,0x1b071718,0x1b081519,0x1b09131a,0x1b0a121a,0x1b0b101b,0x1b0c0e1b,0x1b0d0c1b,0x1b0e0c1b,0x1b0f0c1b,0x1b100b1b,0x1b110a1c,0x1b12091c,0x1b13091c,0x1b14091c,0x1b150a0c,0x1b15111c,0x1b16191c,0x1c071518,0x1c081419,0x1c091219,0x1c0a101a,0x1c0b0f1a,0x1c0c0d1a,0x1c0d0d1a,0x1c0e0d1a,0x1c0f0e1b,0x1c100e1b,0x1c110e1b,0x1c120e1b,0x1c130f1b,0x1c14101b,0x1c15101b,0x1c16111b,0x1c171a1a,0x1d071416,0x1d081217,0x1d091118,0x1d0a0f19,0x1d0b0e19,0x1d0c0e19,0x1d0d0f19,0x1d0e0f19,0x1d0f0f19,0x1d10101a,0x1d11101a,0x1d12111a,0x1d13111a,0x1d14121a,0x1d15131a,0x1d161319,0x1d171518,0x1e081115,0x1e091016,0x1e0a1017,0x1e0b1018,0x1e0c1018,0x1e0d1118,0x1e0e1118,0x1e0f1218,0x1e101218,0x1e111318,0x1e121418,0x1e131418,0x1e141517,
 0x50f1414,0x5101216,0x5111216,0x5121216,0x5131216,0x5141215,0x5151314,0x60e1216,0x60f1217,0x6101117,0x6111217,0x6121217,0x6131217,0x6141217,0x6151216,0x6161215,0x70a1618,0x70b1518,0x70c1319,0x70d1319,0x70e1218,0x70f1118,0x7101118,0x7111218,0x7121218,0x7131118,0x7141118,0x7151117,0x7161216,0x7171215,0x8081619,0x809141a,0x80a141a,0x80b141a,0x80c131a,0x80d131a,0x80e121a,0x80f1119,0x8101119,0x8111119,0x8121119,0x8131119,0x8141118,0x8151118,0x8161117,0x8171216,0x9071519,0x908151a,0x909141b,0x90a141b,0x90b141b,0x90c131b,0x90d131b,0x90e121b,0x90f111a,0x910111a,0x911111a,0x9121119,0x9131019,0x9141119,0x9151118,0x9161118,0x9171217,0x9181315,0xa061618,0xa07151a,0xa08151b,0xa09141c,0xa0a141c,0xa0b141c,0xa0c141c,0xa0d131c,0xa0e121b,0xa0f111b,0xa10111b,0xa11111a,0xa12101a,0xa13101a,0xa141119,0xa151119,0xa161118,0xa171217,0xa181315,0xb061519,0xb07151b,0xb08151c,0xb09141c,0xb0a141c,0xb0b151c,0xb0c161c,0xb0d151c,0xb0e131c,0xb0f121b,0xb10111b,0xb11111b,0xb12111a,0xb13111a,0xb141119,0xb151119,0xb161218,0xb171217,0xb181316,0xc051717,0xc06151a,0xc07151b,0xc08151c,0xc09141c,0xc0a141d,0xc0b171d,0xc0c171d,0xc0d171c,0xc0e161c,0xc0f151c,0xc10131b,0xc11141b,0xc12131a,0xc13111a,0xc14111a,0xc151219,0xc161219,0xc171318,0xc181416,0xd051618,0xd06161a,0xd07151b,0xd08151c,0xd09151c,0xd0a171d,0xd0b181d,0xd0c181d,0xd0d181d,0xd0e171c,0xd0f161c,0xd10151b,0xd11161b,0xd12151b,0xd13141a,0xd14131a,0xd151319,0xd161319,0xd171418,0xd181417,0xd191415,0xe051618,0xe06161a,0xe07151b,0xe08151c,0xe09151c,0xe0a191d,0xe0b191d,0xe0c191d,0xe0d181d,0xe0e181c,0xe0f171c,0xe10181c,0xe11181b,0xe12181b,0xe13161b,0xe14141a,0xe15141a,0xe161419,0xe171419,0xe181418,0xe191416,0xf051617,0xf06161a,0xf07161b,0xf08151c,0xf091a1c,0xf0a1a1c,0xf0b1a1d,0xf0c191d,0xf0d191c,0xf0e181c,0xf0f1a1c,0xf101b1c,0xf111b1b,0xf121a1b,0xf13181b,0xf14151b,0xf15141a,0xf16141a,0xf171419,0xf181419,0xf191418,0xf1a1416,0x10061619,0x10071a1a,0x10081b1b,0x10091b1c,0x100a1b1c,0x100b1b1c,0x100c1a1c,0x100d1a1c,0x10131a1b,0x1014161b,0x1015151b,0x1016141b,0x1017141a,0x1018141a,0x10191419,0x101a1418,0x101b1415,0x110a1c1c,0x110b1b1c,0x1114171c,0x1115151c,0x1116141b,0x1117141b,0x1118131a,0x1119131a,0x111a1319,0x111b1317,0x12141618,0x12141c1c,0x1215141c,0x1216131c,0x1217131b,0x1218131b,0x1219131a,0x121a1319,0x121b1318,0x121c1316,0x13141618,0x1315151c,0x1316141c,0x1317131c,0x1318131b,0x1319131b,0x131a121a,0x131b1219,0x131c1217,0x14141717,0x1415151d,0x1416141d,0x1417141c,0x1418131c,0x1419131b,0x141a131a,0x141b1219,0x141c1217,0x15141717,0x1515161b,0x1516151d,0x1517141d,0x1518141c,0x1519131b,0x151a131b,0x151b1219,0x151c1218,0x16141616,0x1615151a,0x1616151d,0x1617141d,0x1618141c,0x1619131c,0x161a131b,0x161b1319,0x161c1217,0x17141516,0x17151519,0x1716141d,0x1717141d,0x1718141c,0x1719131b,0x171a131b,0x171b1319,0x171c1317,0x18151419,0x1816141c,0x1817141d,0x1818141c,0x1819131b,0x181a131a,0x181b1319,0x181c1516,0x19151418,0x1916141b,0x1917141c,0x1918131c,0x1919131b,0x191a131a,0x191b1318,0x1a151316,0x1a16131a,0x1a17131c,0x1a18131b,0x1a19131a,0x1a1a1319,0x1b161318,0x1b17131b,0x1b18131a,0x1b191319,0x1b1a1517,0x1c171319,0x1c181319,0x1c191517,
 0x6141111,0xb0b1414,0xb0c1315,0xb0d1314,0xc0b1416,0xc0c1316,0xc0d1316,0xc0e1315,0xc0f1314,0xd0a1416,0xd0b1417,0xd0c1317,0xd0d1317,0xd0e1416,0xd0f1415,0xe0a1418,0xe0b1418,0xe0c1318,0xe0d1317,0xe0e1417,0xe0f1416,0xe101414,0xf091519,0xf0a1419,0xf0b1319,0xf0c1318,0xf0d1318,0xf0e1317,0xf0f1416,0xf101414,0x10071619,0x1008151a,0x1009141a,0x100a131a,0x100b121a,0x100c1219,0x100d1219,0x100e1317,0x100f1316,0x10101414,0x11061519,0x1107151a,0x11080e0f,0x1108131b,0x11090e1b,0x110a0e1b,0x110b0f1a,0x110c0f1a,0x110d1018,0x110e1117,0x110f1216,0x11101214,0x12051115,0x12060f18,0x12070e1a,0x12080d1a,0x12090d1b,0x120a0d1b,0x120b0c1a,0x120c0c19,0x120d0d18,0x120e0e17,0x120f0f15,0x12100f14,0x12111013,0x12121112,0x12130f13,0x12140e13,0x12150d13,0x12160c12,0x12170b11,0x12180a0e,0x13050f16,0x13060e18,0x13070d19,0x13080c1a,0x13090c1b,0x130a0c1b,0x130b0c1a,0x130c0b19,0x130d0c17,0x130e0d16,0x130f0e14,0x13100f13,0x13110f13,0x13120f13,0x13130f15,0x13140e15,0x13150d14,0x13160c13,0x13170c12,0x13180a12,0x13190c12,0x131a0f11,0x14040f14,0x14050e16,0x14060d18,0x14070c19,0x14080c1a,0x14090c1b,0x140a0b1a,0x140b0b19,0x140c0a18,0x140d0c16,0x140e0d15,0x140f0e13,0x14100f12,0x14110f13,0x14120f14,0x14130e15,0x14140e16,0x14150d14,0x14160c13,0x14170c13,0x14180b12,0x14190a12,0x141a0e12,0x141b1011,0x15040e15,0x15050d17,0x15060c18,0x15070c19,0x15080b1a,0x15090b1b,0x150a0b19,0x150b0b18,0x150c0a16,0x150d0c14,0x150e0d13,0x150f0e12,0x15100e11,0x15110f12,0x15120e13,0x15130e15,0x15140d16,0x15150d15,0x15160c14,0x15170c13,0x15180b13,0x15190a12,0x151a0e12,0x151b1011,0x16031012,0x16040e15,0x16050d17,0x16060c19,0x16070c1a,0x16080b1a,0x16090b19,0x160a0b18,0x160b0a16,0x160c0a14,0x160d0b13,0x160e0d12,0x160f0e11,0x16100e10,0x16110f11,0x16120e12,0x16130e14,0x16140d15,0x16150d14,0x16160c14,0x16170c13,0x16180b13,0x16190a12,0x161a0f12,0x161b1012,0x17031013,0x17040e15,0x17050d17,0x17060c19,0x17070b1a,0x17080b1a,0x17090b18,0x170a0b16,0x170b0a15,0x170c0a13,0x170d0b12,0x170e0d10,0x170f0e0f,0x17110f0f,0x17120e11,0x17130e13,0x17140d14,0x17150c14,0x17160c13,0x17170b13,0x17180b13,0x17190a12,0x171a0f12,0x171b1112,0x18031013,0x18040e15,0x18050d17,0x18060c19,0x18070b1a,0x18080b18,0x18090b16,0x180a0b15,0x180b0b13,0x180c0a12,0x180d0b10,0x180e0d0f,0x18120f10,0x18130e12,0x18140d14,0x18150c13,0x18160c13,0x18170b13,0x18180b13,0x18190e12,0x181a1012,0x181b1212,0x19031111,0x19040e15,0x19050d17,0x19060c18,0x19070c18,0x19080b17,0x19090b15,0x190a0b13,0x190b0b12,0x190c0b10,0x190d0b0f,0x19130e10,0x19140d12,0x19150c13,0x19160c13,0x19170b13,0x19180b12,0x19190f12,0x191a1112,0x1a040f14,0x1a050d16,0x1a060d18,0x1a070c17,0x1a080c15,0x1a090b14,0x1a0a0b12,0x1a0b0b10,0x1a0c0b0f,0x1a0d0c0d,0x1a140e11,0x1a150d12,0x1a160c12,0x1a170b12,0x1a180f12,0x1a191112,0x1a1a1212,0x1b041012,0x1b050e15,0x1b060d17,0x1b070d16,0x1b080c14,0x1b090c12,0x1b0a0c11,0x1b0b0c0f,0x1b0c0c0d,0x1b150d10,0x1b160f12,0x1b171012,0x1b181112,0x1b191212,0x1c051013,0x1c060e16,0x1c070e14,0x1c080d13,0x1c090d11,0x1c0a0d0f,0x1c0b0d0e,0x1c171212,0x1d061113,0x1d070f13,0x1d080f11,0x1d090e10,0x1d0a0e0e,
 0x60f1111,0x6101010,0x6111010,0x6121010,0x6131010,0x6141010,0x6151111,0x70d1212,0x70e1111,0x70f1010,0x7101010,0x7110f10,0x7120f0f,0x7130f10,0x7140f10,0x7151010,0x7161111,0x80b1313,0x80c1212,0x80d1112,0x80e1011,0x80f0f10,0x8100f10,0x8110f0f,0x8120f0f,0x8130f10,0x8140f10,0x8150f10,0x8161010,0x8171111,0x9081414,0x9091313,0x90a1313,0x90b1213,0x90c1112,0x90d1012,0x90e1011,0x90f0f10,0x9100f10,0x9110e0f,0x9120e0f,0x9130e0f,0x9140e10,0x9150f10,0x9160f10,0x9171111,0xa071414,0xa081314,0xa091213,0xa0a1213,0xa0b1113,0xa0c1113,0xa0d1012,0xa0e0f11,0xa0f0f10,0xa100e10,0xa110e10,0xa120e0f,0xa130e0f,0xa140e10,0xa150f10,0xa160f10,0xa171011,0xa181212,0xb071314,0xb081314,0xb091213,0xb0a1113,0xb0b1113,0xb0c1012,0xb0d0f12,0xb0e0f12,0xb0f0e11,0xb100e10,0xb110e10,0xb120e10,0xb130e10,0xb140e10,0xb150e10,0xb160f11,0xb171011,0xb181112,0xc061414,0xc071314,0xc081214,0xc091113,0xc0a1113,0xc0b1013,0xc0c1012,0xc0d0f12,0xc0e0f12,0xc0f0e12,0xc100e11,0xc110e10,0xc120e10,0xc130e10,0xc140e10,0xc150e11,0xc160f11,0xc171012,0xc181113,0xd061415,0xd071314,0xd081214,0xd091114,0xd0a1013,0xd0b1013,0xd0c0f12,0xd0d0f12,0xd0e0e13,0xd0f0e13,0xd100e12,0xd110d11,0xd120d11,0xd130d11,0xd140e12,0xd150e12,0xd160f12,0xd170f13,0xd181113,0xd191313,0xe061415,0xe071214,0xe081114,0xe091114,0xe0a1013,0xe0b0f13,0xe0c0f12,0xe0d0e12,0xe0e0e13,0xe0f0e13,0xe100d13,0xe110d12,0xe120d12,0xe130d12,0xe140d13,0xe150d13,0xe160e13,0xe170f13,0xe181013,0xe191213,0xf061315,0xf071215,0xf081114,0xf091014,0xf0a0f13,0xf0b0f12,0xf0c0e12,0xf0d0e12,0xf0e0d12,0xf0f0d13,0xf100c13,0xf110c13,0xf120b12,0xf130b12,0xf140b13,0xf150c13,0xf160d13,0xf170e13,0xf180f13,0xf191113,0xf1a1213,0x10061215,0x10071115,0x10081014,0x10090f13,0x100a0e12,0x100b0e11,0x100c0e11,0x100d0d11,0x100e0c12,0x100f0b12,0x10100a13,0x10110912,0x10120912,0x10130812,0x10140912,0x10150912,0x10160a13,0x10170c13,0x10180e13,0x10191013,0x101a1113,0x101b1313,0x11061114,0x11070f14,0x11081012,0x110a0d0d,0x110b0d0e,0x110c0d0e,0x110d0c0f,0x110e0b10,0x110f0a11,0x11100811,0x11110811,0x11120709,0x11120b11,0x11130708,0x11130c10,0x11140707,0x11140c11,0x11150707,0x11150b11,0x11160a11,0x11170912,0x11180d12,0x11190f12,0x111a1012,0x111b1212,0x120d0b0c,0x120e0a0d,0x120f0d0e,0x12180f10,0x12190e11,0x121a0f12,0x121b1112,0x131b1011,
 };
-long rubblestart[4] = {0,326,623,899,};
-long rubblenum[4] = {326,297,276,217,};
+const long rubblestart[4] = {0,326,623,899,};
+const long rubblenum[4] = {326,297,276,217,};
 
 	//This is used to control the rate of rapid fire
 #define MAXWEAP 4
@@ -345,11 +358,13 @@ void botinit ()
 	float f, g;
 	long i, j, x, y, c;
 	float fsc[4+14] = {.4,.45,.55,.45,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
-	long col[4+14] = {0x80453010,0x80403510,0x80403015,0x80423112,
-							0x80403013,0x80433010,0x80403313,0x80403310,0x80433013,
-							0x80403310,0x80403310,0x80433013,0x80433010,0x80403310,
-							0x80433010,0x80403013,0x80433310,0x80403013,
-							};
+	long col[4+14] =
+	{
+		(long)0x80453010,(long)0x80403510,(long)0x80403015,(long)0x80423112,
+		(long)0x80403013,(long)0x80433010,(long)0x80403313,(long)0x80403310,(long)0x80433013,
+		(long)0x80403310,(long)0x80403310,(long)0x80433013,(long)0x80433010,(long)0x80403310,
+		(long)0x80433010,(long)0x80403013,(long)0x80433310,(long)0x80403013,
+	};
 	long xpos[4+14] = {0,16, 3,20,  8,24, 0, 7,25,19,12,26,10, 3,29,11,18,25};
 	long ypos[4+14] = {0, 5,16,22,  1, 3, 8, 8, 9,13,15,16,12,24,24,28,29,29};
 	long rad[4+14] = {68,51,78,67, 20,21,25,19,22,26,18,24,25,23,25,17,23,25};
@@ -374,18 +389,6 @@ void botinit ()
 		}
 }
 
-static _inline void fcossin (float a, float *c, float *s)
-{
-	_asm
-	{
-		fld a
-		fsincos
-		mov eax, c
-		fstp dword ptr [eax]
-		mov eax, s
-		fstp dword ptr [eax]
-	}
-}
 
 #define EXTRASLICECOVER 1
 
@@ -490,7 +493,7 @@ long initmap ()
 		kv6[i] = getkv6(tempnam);
 
 			//Generate all lower mip-maps here:
-		for(tempkv6=kv6[i];tempkv6=genmipkv6(tempkv6););
+		for(tempkv6=kv6[i];(tempkv6=genmipkv6(tempkv6)););
 	}
 
 		//Initialize solid height&color map at bottom of world
@@ -504,16 +507,16 @@ long initmap ()
 
 			if (!loadvxl(vxlnam,&ipos,&istr,&ihei,&ifor))
 				loadnul(&ipos,&istr,&ihei,&ifor);
-			loadsky(skynam);
+			//loadsky(skynam);
 
 			//parse (global) userst here
 
-			for(numsprites=0;kv6nam=parspr(&spr[numsprites],&userst);numsprites++)
+			for(numsprites=0;(kv6nam=parspr(&spr[numsprites],&userst));numsprites++)
 			{
 				if (numsprites >= MAXSPRITES) continue; //OOPS! Just to be safe
 
 					//KLIGHT is dummy sprite for light sources - don't load it!
-				if (!stricmp(kv6nam,"KV6\\KLIGHT.KV6"))
+				if (!strcasecmp(kv6nam,"KV6\\KLIGHT.KV6"))
 				{
 					//Copy light position info here!
 					continue;
@@ -526,22 +529,22 @@ long initmap ()
 				if (!(spr[numsprites].flags&2)) //generate mips for KV6 in SXL
 				{
 					tempkv6 = spr[numsprites].voxnum;
-					while (tempkv6 = genmipkv6(tempkv6));
+					while ((tempkv6 = genmipkv6(tempkv6)));
 				}
 				else //generate mips for KFA in SXL
 				{
 					for(i=(spr[numsprites].kfaptr->numspr)-1;i>=0;i--)
 					{
 						tempkv6 = spr[numsprites].kfaptr->spr[i].voxnum;
-						while (tempkv6 = genmipkv6(tempkv6));
+						while ((tempkv6 = genmipkv6(tempkv6)));
 					}
 				}
 #endif
 
-				if ((spr[numsprites].voxnum == kv6[CACO]) || (spr[numsprites].voxnum == kv6[WORM]))
-					{ spr[numsprites].owner = 100; continue; }
+				if (( spr[numsprites].voxnum == kv6[CACO]) || (spr[numsprites].voxnum == kv6[WORM]))
+					{ (spr[numsprites]).owner = 100; continue; }
 				else if (spr[numsprites].voxnum == kv6[DOOR])
-					{ sscanf(userst,"%d %d",&spr[numsprites].tag,&spr[numsprites].owner); continue; }
+					{ sscanf(userst,"%ld %ld",&spr[numsprites].tag,&spr[numsprites].owner); continue; }
 			}
 
 		} else loadnul(&ipos,&istr,&ihei,&ifor);
@@ -605,9 +608,9 @@ long initmap ()
 	vx5.fallcheck = 1;
 	updatevxl();
 
-	vx5.maxscandist = (long)(VSID*1.42);
+	vx5.maxscandist = 264;//(long)(VSID*1.42);
 
-	//vx5.fogcol = 0x6f6f7f; vx5.maxscandist = 768; //TEMP HACK!!!
+	vx5.fogcol = -1; //vx5.maxscandist = 768; //TEMP HACK!!!
 
 	ivel.x = ivel.y = ivel.z = 0;
 
@@ -619,17 +622,18 @@ long initmap ()
 long initapp (long argc, char **argv)
 {
 	long i, j, k, z, argfilindex, cpuoption = -1;
+	extern long cputype;
 
 	prognam = "\"Ken-VOXLAP\" test game";
 	xres = 640; yres = 480; colbits = 32; fullscreen = 0; argfilindex = -1;
 	for(i=argc-1;i>0;i--)
 	{
 		if ((argv[i][0] != '/') && (argv[i][0] != '-')) { argfilindex = i; continue; }
-		if (!stricmp(&argv[i][1],"win")) { fullscreen = 0; continue; }
-		if (!stricmp(&argv[i][1],"3dn")) { cpuoption = 0; continue; }
-		if (!stricmp(&argv[i][1],"sse")) { cpuoption = 1; continue; }
-		if (!stricmp(&argv[i][1],"sse2")) { cpuoption = 2; continue; }
-		//if (!stricmp(&argv[i][1],"?")) { showinfo(); return(-1); }
+		if (!strcasecmp(&argv[i][1],"win")) { fullscreen = 0; continue; }
+		if (!strcasecmp(&argv[i][1],"3dn")) { cpuoption = 0; continue; }
+		if (!strcasecmp(&argv[i][1],"sse")) { cpuoption = 1; continue; }
+		if (!strcasecmp(&argv[i][1],"sse2")) { cpuoption = 2; continue; }
+		//if (!strcasecmp(&argv[i][1],"?")) { showinfo(); return(-1); }
 		if ((argv[i][1] >= '0') && (argv[i][1] <= '9'))
 		{
 			k = 0; z = 0;
@@ -657,7 +661,6 @@ long initapp (long argc, char **argv)
 	setsideshades(0,4,1,3,2,2);
 
 		//AthlonXP 2000+: SSE:26.76ms, 3DN:27.34ms, SSE2:28.93ms
-	extern long cputype;
 	switch(cpuoption)
 	{
 		case 0: cputype &= ~((1<<25)|(1<<26)); cputype |= ((1<<30)|(1<<31)); break;
@@ -697,7 +700,7 @@ long initapp (long argc, char **argv)
 		}
 
 	if (argfilindex >= 0) strcpy(cursxlnam,argv[argfilindex]);
-						  else strcpy(cursxlnam,"vxl/default.sxl");
+						  else strcpy(cursxlnam,"vxl/untitled.sxl");
 	if (initmap() < 0) return(-1);
 
 		//Init klock
@@ -751,8 +754,8 @@ void movedebris ()
 {
 	long i, j;
 	float f;
-	point3d ofp, fp;
-	lpoint3d lp;
+	__ALIGN(16) point3d ofp, fp;
+	__ALIGN(16) lpoint3d lp;
 
 	for(i=dbritail;i!=dbrihead;i=((i+1)&(MAXDBRI-1)))
 	{
@@ -770,19 +773,19 @@ void movedebris ()
 		{
 			if (isvoxelsolid((long)dbri[i].p.x,(long)dbri[i].p.y,(long)dbri[i].p.z))
 			{
-				//if (!(rand()&3))
-				//{
+				if (!(rand()&1))
+				{
 					dbri[i] = dbri[dbritail];
 					dbritail = ((dbritail+1)&(MAXDBRI-1));
-				//}
-				//else //TOO SLOW TO BE USEFUL :/
-				//{
-				//   estnorm((long)dbri[i].p.x,(long)dbri[i].p.y,(long)dbri[i].p.z,&fp);
-				//   f = (dbri[i].v.x*fp.x + dbri[i].v.y*fp.y + dbri[i].v.z*fp.z)*2.f;
-				//   dbri[i].v.x = (dbri[i].v.x - fp.x*f)*.5f;
-				//   dbri[i].v.y = (dbri[i].v.y - fp.y*f)*.5f;
-				//   dbri[i].v.z = (dbri[i].v.z - fp.z*f)*.5f;
-				//}
+				}
+				else //TOO SLOW TO BE USEFUL :/
+				{
+				   estnorm((long)dbri[i].p.x,(long)dbri[i].p.y,(long)dbri[i].p.z,&fp);
+				   f = (dbri[i].v.x*fp.x + dbri[i].v.y*fp.y + dbri[i].v.z*fp.z)*2.f;
+				   dbri[i].v.x = (dbri[i].v.x - fp.x*f)*.5f;
+				   dbri[i].v.y = (dbri[i].v.y - fp.y*f)*.5f;
+				   dbri[i].v.z = (dbri[i].v.z - fp.z*f)*.5f;
+				}
 			}
 		}
 		else //no bounce; freeze color into .VXL map
@@ -839,7 +842,7 @@ void explodesprite (vx5sprite *spr, float vel, long liquid, long stepsize)
 			fp3.z = spr->h.z*fp.y + fp2.z;
 			for(ve=&v[kv->ylen[x*kv->ysiz+y]];v<ve;v++)
 			{
-#if 1          //Surface voxels only
+#if 0          //Surface voxels only
 				i--; if (i >= 0) continue; i = stepsize;
 				fp.z = v->z - kv->zpiv;
 				fp4.x = spr->f.x*fp.z + fp3.x;
@@ -972,7 +975,8 @@ void doframe ()
 	}
 
 	for(i=dbritail;i!=dbrihead;i=((i+1)&(MAXDBRI-1)))
-		drawspherefill(dbri[i].p.x,dbri[i].p.y,dbri[i].p.z,(float)(totclk-dbri[i].tim)*.0004-1,dbri[i].col);
+		//drawspherefill(dbri[i].p.x,dbri[i].p.y,dbri[i].p.z,-((float)((totclk-dbri[i].tim)*.00004-1)/2.0f),dbri[i].col);
+		drawspherefill(dbri[i].p.x,dbri[i].p.y,dbri[i].p.z,((float)((totclk-dbri[i].tim)*.00004-1)/6.0f),dbri[i].col);
 
 	if (woodspr.owner >= 0)
 		drawsprite(&woodspr);
@@ -999,13 +1003,13 @@ void doframe ()
 		//Show health on bottom of screen
 	if (showhealth)
 	{
-		sprintf(tempbuf,"%d",myhealth); j = strlen(tempbuf);
+		sprintf(tempbuf,"%ld",myhealth); j = strlen(tempbuf);
 		if (xres >= 512) l = 16; else l = 15;
 		for(i=0;i<j;i++)
 		{
 			if ((tempbuf[i] >= '0') && (tempbuf[i] <= '9')) k = tempbuf[i]-'0'; else k = 10;
 			drawtile(numb[k].f,numb[k].p,numb[k].x,numb[k].y,0,numb[k].y<<16,
-				((i*24-j*12)<<l)+(xres<<15),(yres-6)<<16,1<<l,1<<l,0,(min(max(100-myhealth,0),100)*0x010202)^-1);
+				((i*24-j*12)<<l)+(xres<<15),(yres-6)<<16,1<<l,1<<l,0,(MIN(MAX(100-myhealth,0),100)*0x010202)^-1);
 		}
 	}
 
@@ -1047,7 +1051,7 @@ void doframe ()
 		j = strlen(message); l = 0; lp.x = xres/FONTXDIM; lp.y = 0;
 		while (l < j)
 		{
-			lp.z = min(l+lp.x,j);
+			lp.z = MIN(l+lp.x,j);
 			if (!l) m = ((-l)*FONTXDIM-(((lp.z-l)*FONTXDIM)>>1));
 				else m = ((-l)*FONTXDIM-((lp.x*FONTXDIM)>>1));
 			for(i=l;i<lp.z;i++)
@@ -1069,7 +1073,7 @@ void doframe ()
 		lp.x = xres/FONTXDIM; lp.y = yres-32-6-((j-1)/lp.x)*(FONTYDIM+2);
 		for(l=0;l<j;l+=lp.x)
 		{
-			lp.z = min(l+lp.x,j);
+			lp.z = MIN(l+lp.x,j);
 			if (!l) m = ((-l)*FONTXDIM-(((lp.z-l)*FONTXDIM)>>1));
 				else m = ((-l)*FONTXDIM-((lp.x*FONTXDIM)>>1));
 			for(i=l;i<lp.z;i++)
@@ -1160,7 +1164,7 @@ void doframe ()
 	if (showfps)
 	{
 			//Fast sort when already sorted... otherwise slow!
-		j = min(numframes,FPSSIZ)-1;
+		j = MIN(numframes,FPSSIZ)-1;
 		for(k=0;k<j;k++)
 			if (fpsometer[fpsind[k]] > fpsometer[fpsind[k+1]])
 			{
@@ -1175,7 +1179,7 @@ void doframe ()
 		i = ((fpsometer[fpsind[j>>1]]+fpsometer[fpsind[(j+1)>>1]])>>1); //Median
 
 		drawline2d(0,i>>4,FPSSIZ,i>>4,0xe06060);
-		for(k=0;k<FPSSIZ;k++) drawpoint2d(k,min(fpsometer[(numframes+k)&(FPSSIZ-1)]>>4,yres-1),0xc0c0c0);
+		for(k=0;k<FPSSIZ;k++) drawpoint2d(k,MIN(fpsometer[(numframes+k)&(FPSSIZ-1)]>>4,yres-1),0xc0c0c0);
 		print4x6(0,0,0xc0c0c0,-1,"%d.%02dms %.2ffps",i/100,i%100,100000.0/(float)i);
 	}
 
@@ -1219,7 +1223,7 @@ skipalldraw:;
 	if (keystatus[0xd0]) { ivel.x -= ifor.x*f; ivel.y -= ifor.y*f; ivel.z -= ifor.z*f; }
 	if (keystatus[0x9d]) { ivel.x -= ihei.x*f; ivel.y -= ihei.y*f; ivel.z -= ihei.z*f; } //Rt.Ctrl
 	if (keystatus[0x52]) { ivel.x += ihei.x*f; ivel.y += ihei.y*f; ivel.z += ihei.z*f; } //KP0
-	//ivel.z += fsynctics*2.0; //Gravity (used to be *4.0)
+	//ivel.z += fsynctics*4.0; //Gravity (used to be *4.0)
 	f = fsynctics*64.0;
 	dp.x = ivel.x*f;
 	dp.y = ivel.y*f;
@@ -1295,13 +1299,13 @@ skipalldraw:;
 
 	if (!typemode)
 	{
-		while (i = keyread()) //Detect 'T' (for typing mode)
+		while ((i = keyread())) //Detect 'T' (for typing mode)
 			if (((i&255) == 'T') || ((i&255) == 't'))
 				{ typemode = 1; typemessage[0] = '_'; typemessage[1] = 0; break; }
 	}
 	if (typemode)
 	{
-		while (i = keyread())
+		while ((i = keyread()))
 		{
 			if (!(i&255)) continue;
 			i &= 255;
@@ -1318,14 +1322,14 @@ skipalldraw:;
 					typemessage[j-1] = 0;
 					if (typemessage[0] == '/')
 					{
-						if (!stricmp(&typemessage[1],"fps")) { showfps ^= 1; typemessage[0] = 0; }
-						if (!stricmp(&typemessage[1],"fallcheck")) { vx5.fallcheck ^= 1; typemessage[0] = 0; }
-						if (!stricmp(&typemessage[1],"sideshademode"))
+						if (!strcasecmp(&typemessage[1],"fps")) { showfps ^= 1; typemessage[0] = 0; }
+						if (!strcasecmp(&typemessage[1],"fallcheck")) { vx5.fallcheck ^= 1; typemessage[0] = 0; }
+						if (!strcasecmp(&typemessage[1],"sideshademode"))
 						{
 							if (!vx5.sideshademode) setsideshades(0,28,8,24,12,12); else setsideshades(0,4,1,3,2,2); //setsideshades(0,0,0,0,0,0);
 							typemessage[0] = 0;
 						}
-						if (!_memicmp(&typemessage[1],"faceshade=",10))
+						if (!memcasecmp(&typemessage[1],"faceshade=",10))
 						{
 							char *cptr;
 							tempbuf[0] = tempbuf[1] = tempbuf[2] = tempbuf[3] = tempbuf[4] = tempbuf[5] = 0;
@@ -1342,9 +1346,9 @@ skipalldraw:;
 							setsideshades(tempbuf[0],tempbuf[1],tempbuf[2],tempbuf[3],tempbuf[4],tempbuf[5]);
 							typemessage[0] = 0;
 						}
-						if (!stricmp(&typemessage[1],"curvy")) { if (curvystp >= 0) curvystp = ~curvystp; typemessage[0] = 0; }
-						if (!stricmp(&typemessage[1],"monst")) { disablemonsts ^= 1; typemessage[0] = 0; }
-						if (!stricmp(&typemessage[1],"light"))
+						if (!strcasecmp(&typemessage[1],"curvy")) { if (curvystp >= 0) curvystp = ~curvystp; typemessage[0] = 0; }
+						if (!strcasecmp(&typemessage[1],"monst")) { disablemonsts ^= 1; typemessage[0] = 0; }
+						if (!strcasecmp(&typemessage[1],"light"))
 						{
 							if (vx5.numlights < MAXLIGHTS)
 							{
@@ -1355,12 +1359,11 @@ skipalldraw:;
 								vx5.lightsrc[vx5.numlights].r2 = (float)(i*i);
 								vx5.lightsrc[vx5.numlights].sc = 262144.0; //4096.0;
 								vx5.numlights++;
-
-								updatebbox((long)ipos.x-i,(long)ipos.y-i,(long)ipos.z-i,(long)ipos.x+i,(long)ipos.y+i,(long)ipos.z+i,0);
+								updatebbox( (long)ipos.x-i,(long)ipos.y-i,(long)ipos.z-i,(long)ipos.x+i,(long)ipos.y+i,(long)ipos.z+i,0 );
 							}
 							typemessage[0] = 0;
 						}
-						if (!stricmp(&typemessage[1],"lightclear"))
+						if (!strcasecmp(&typemessage[1],"lightclear"))
 						{
 							i = 128; //radius to use
 							for(j=vx5.numlights-1;j>=0;j--)
@@ -1368,13 +1371,13 @@ skipalldraw:;
 											  (long)vx5.lightsrc[j].p.x+i,(long)vx5.lightsrc[j].p.y+i,(long)vx5.lightsrc[j].p.z+i,0);
 							vx5.numlights = 0; typemessage[0] = 0;
 						}
-						if (!_memicmp(&typemessage[1],"lightmode=",10))
+						if (!memcasecmp(&typemessage[1],"lightmode=",10))
 						{
-							 vx5.lightmode = min(max(atoi(&typemessage[11]),0),2);
+							 vx5.lightmode = MIN(MAX(atoi(&typemessage[11]),0),2);
 							 updatebbox(0,0,0,VSID,VSID,MAXZDIM,0);
 							 typemessage[0] = 0;
 						}
-						if (!_memicmp(&typemessage[1],"curvy=",6))
+						if (!memcasecmp(&typemessage[1],"curvy=",6))
 						{
 							if (curvystp < 0) curvystp = ~curvystp;
 
@@ -1385,7 +1388,12 @@ skipalldraw:;
 							curvykv6 = getkv6(tempbuf);
 							if (curvykv6)
 							{
-								for(kv6data *tempkv6=curvykv6;tempkv6=genmipkv6(tempkv6);); //Generate all lower mip-maps here:
+								do {
+									kv6data *tempkv6;
+									for(tempkv6=curvykv6;
+										(tempkv6=genmipkv6(tempkv6));
+										); //Generate all lower mip-maps here:
+								} while (0);
 								curvyspr.p.x = ipos.x + ifor.x*32;
 								curvyspr.p.y = ipos.y + ifor.y*32;
 								curvyspr.p.z = ipos.z + ifor.z*32;
@@ -1398,18 +1406,18 @@ skipalldraw:;
 							typemessage[0] = 0;
 						}
 
-						if (!_memicmp(&typemessage[1],"curvystp=",9)) { curvystp = atoi(&typemessage[10]); typemessage[0] = 0; }
-						if (!_memicmp(&typemessage[1],"scandist=",9)) { vx5.maxscandist = atoi(&typemessage[10]); typemessage[0] = 0; }
-						if (!_memicmp(&typemessage[1],"fogcol=",7)) { vx5.fogcol = strtol(&typemessage[8],0,0); typemessage[0] = 0; }
-						if (!_memicmp(&typemessage[1],"kv6col=",7)) { vx5.kv6col = strtol(&typemessage[8],0,0); typemessage[0] = 0; }
-						if (!_memicmp(&typemessage[1],"anginc=",7)) { vx5.anginc = atoi(&typemessage[8]); if (vx5.anginc > 0) lockanginc = 1; else { lockanginc = 0; vx5.anginc = 1; } typemessage[0] = 0; }
-						if (!_memicmp(&typemessage[1],"vxlmip=",7)) { vx5.mipscandist = atoi(&typemessage[8]); typemessage[0] = 0; }
-						if (!_memicmp(&typemessage[1],"kv6mip=",7)) { vx5.kv6mipfactor = atoi(&typemessage[8]); typemessage[0] = 0; }
-						if (!_memicmp(&typemessage[1],"health=",7)) { myhealth = atoi(&typemessage[8]); typemessage[0] = 0; }
-						if (!_memicmp(&typemessage[1],"numdynamite=",12)) { numdynamite = atoi(&typemessage[13]); typemessage[0] = 0; }
-						if (!_memicmp(&typemessage[1],"numjoystick=",12)) { numjoystick = atoi(&typemessage[13]); typemessage[0] = 0; }
-						if (!_memicmp(&typemessage[1],"showtarget=",11)) { showtarget = atoi(&typemessage[12]); typemessage[0] = 0; }
-						if (!_memicmp(&typemessage[1],"showhealth=",11)) { showhealth = atoi(&typemessage[12]); typemessage[0] = 0; }
+						if (!memcasecmp(&typemessage[1],"curvystp=",9)) { curvystp = atoi(&typemessage[10]); typemessage[0] = 0; }
+						if (!memcasecmp(&typemessage[1],"scandist=",9)) { vx5.maxscandist = atoi(&typemessage[10]); typemessage[0] = 0; }
+						if (!memcasecmp(&typemessage[1],"fogcol=",7)) { vx5.fogcol = strtol(&typemessage[8],0,0); typemessage[0] = 0; }
+						if (!memcasecmp(&typemessage[1],"kv6col=",7)) { vx5.kv6col = strtol(&typemessage[8],0,0); typemessage[0] = 0; }
+						if (!memcasecmp(&typemessage[1],"anginc=",7)) { vx5.anginc = atoi(&typemessage[8]); if (vx5.anginc > 0) lockanginc = 1; else { lockanginc = 0; vx5.anginc = 1; } typemessage[0] = 0; }
+						if (!memcasecmp(&typemessage[1],"vxlmip=",7)) { vx5.mipscandist = atoi(&typemessage[8]); typemessage[0] = 0; }
+						if (!memcasecmp(&typemessage[1],"kv6mip=",7)) { vx5.kv6mipfactor = atoi(&typemessage[8]); typemessage[0] = 0; }
+						if (!memcasecmp(&typemessage[1],"health=",7)) { myhealth = atoi(&typemessage[8]); typemessage[0] = 0; }
+						if (!memcasecmp(&typemessage[1],"numdynamite=",12)) { numdynamite = atoi(&typemessage[13]); typemessage[0] = 0; }
+						if (!memcasecmp(&typemessage[1],"numjoystick=",12)) { numjoystick = atoi(&typemessage[13]); typemessage[0] = 0; }
+						if (!memcasecmp(&typemessage[1],"showtarget=",11)) { showtarget = atoi(&typemessage[12]); typemessage[0] = 0; }
+						if (!memcasecmp(&typemessage[1],"showhealth=",11)) { showhealth = atoi(&typemessage[12]); typemessage[0] = 0; }
 					}
 					if (typemessage[0])
 					{
@@ -1422,7 +1430,7 @@ skipalldraw:;
 			}
 			else
 			{
-				if (j+1 < sizeof(typemessage))
+				if ((j+1) < (long)sizeof(typemessage))
 				{
 					typemessage[j-1] = (char)i;
 					typemessage[j] = '_';
@@ -1449,7 +1457,7 @@ skipalldraw:;
 						playsound(MACHINEGUN,100,(float)(rand()-16384)*.000005+1.0,&fp,KSND_3D);
 						i = (*hind)|0xff000000; //Maximum brightness
 						vx5.colfunc = mycolfunc; vx5.curcol = 0x80704030;
-						setsphere(&lp2,4,-1);
+						setsphere(&lp2,1,-1);
 
 						if (vx5.maxz >= botheimin)
 						{
@@ -1459,7 +1467,7 @@ skipalldraw:;
 
 						lastbulpos.x = lp2.x; lastbulpos.y = lp2.y; lastbulpos.z = lp2.z;
 						lastbulvel.x = ifor.x; lastbulvel.y = ifor.y; lastbulvel.z = ifor.z;
-						spawndebris(&fp,0.5,i,4,0);
+						spawndebris(&fp,.75,i,40,0);
 					}
 				}
 				break;
@@ -1478,12 +1486,12 @@ skipalldraw:;
 						spr[i].p.y = ipos.y+ihei.y*4;
 						spr[i].p.z = ipos.z+ihei.z*4;
 
-						f = 0.2;
+						f = .02;
 						spr[i].s.x = istr.x*f; spr[i].s.y = istr.y*f; spr[i].s.z = istr.z*f;
 						spr[i].h.x = ihei.x*f; spr[i].h.y = ihei.y*f; spr[i].h.z = ihei.z*f;
 						spr[i].f.x = ifor.x*f; spr[i].f.y = ifor.y*f; spr[i].f.z = ifor.z*f;
 						spr[i].flags = 0;
-						spr[i].v.x = ifor.x*256; spr[i].v.y = ifor.y*256; spr[i].v.z = ifor.z*256;
+						spr[i].v.x = ifor.x*8256; spr[i].v.y = ifor.y*8256; spr[i].v.z = ifor.z*8256;
 
 						playsound(SHOOTBUL,100,(float)(rand()-16384)*.000005+1.0,&spr[i].p,KSND_MOVE);
 					}
@@ -1625,7 +1633,7 @@ skipalldraw:;
 			spr[i].v.z += fsynctics*64;
 
 				//Do rotation
-			f = min(totclk-spr[i].tim,250)*fsynctics*.01;
+			f = MIN(totclk-spr[i].tim,250)*fsynctics*.01;
 			axisrotate(&spr[i].s,&spr[i].r,f);
 			axisrotate(&spr[i].h,&spr[i].r,f);
 			axisrotate(&spr[i].f,&spr[i].r,f);
@@ -2038,13 +2046,13 @@ skipalldraw:;
 					}
 					else
 					{
-						if (j = meltsphere(&spr[i],&lp,k))
+						if ((j = meltsphere(&spr[i],&lp,k)))
 						{
 							if (k == 12) playsound(HITWALL,100,1.0,&spr[i].p,KSND_3D);
 									  else playsound(BLOWUP,100,1.0,&spr[i].p,KSND_3D);
 
 							spr[i].tag = -17; spr[i].tim = totclk; spr[i].owner = 0;
-							f = min(256.0/(float)j,1.0);
+							f = MIN(256.0/(float)j,1.0);
 							spr[i].v.x *= f; spr[i].v.y *= f; spr[i].v.z *= f;
 							vecrand(1.0,&spr[i].r);
 							//spr[i].r.x = ((float)rand()/16383.5f)-1.f;
@@ -2111,7 +2119,7 @@ skipalldraw:;
 		{
 			f = ((float)spr[i].tag*PI/180.0);
 			if (spr[i].owner) f /= (float)spr[i].owner;
-			j = min((long)(fsynctics*1000.0),spr[i].tim);
+			j = MIN((long)(fsynctics*1000.0),spr[i].tim);
 			orthorotate(j*f,0,0,&spr[i].s,&spr[i].h,&spr[i].f);
 			spr[i].tim -= j;
 			continue;
@@ -2194,24 +2202,24 @@ skipalldraw:;
 	if (keystatus[0x4a]) //KP-
 	{
 		keystatus[0x4a] = 0;
-		volpercent = max(volpercent-10,0);
-		sprintf(message,"Volume: %d%%",volpercent);
+		volpercent = MAX(volpercent-10,0);
+		sprintf(message,"Volume: %ld%%",volpercent);
 		quitmessagetimeout = messagetimeout = totclk+4000;
 		setvolume(volpercent);
 	}
 	if (keystatus[0x4e]) //KP-
 	{
 		keystatus[0x4e] = 0;
-		volpercent = min(volpercent+10,100);
-		sprintf(message,"Volume: %d%%",volpercent);
+		volpercent = MIN(volpercent+10,100);
+		sprintf(message,"Volume: %ld%%",volpercent);
 		quitmessagetimeout = messagetimeout = totclk+4000;
 		setvolume(volpercent);
 	}
 
 	if (keystatus[0x9c]) //KP Enter
 	{
-		keystatus[0x9c] = 0;
 		static long macq = 1;
+		keystatus[0x9c] = 0;
 		macq ^= 1; setacquire(macq,1);
 	}
 
@@ -2239,7 +2247,7 @@ skipalldraw:;
 			i = (rand()%validmodecnt);
 		} while ((validmodelist[i].x > 640) || (validmodelist[i].y > 480) || (validmodelist[i].c != 32));
 		changeres(validmodelist[i].x,validmodelist[i].y,validmodelist[i].c,rand()&1);
-		sprintf(message,"%d x %d x %d (",xres,yres,colbits);
+		sprintf(message,"%ld x %ld x %ld (",xres,yres,colbits);
 		if (!fullscreen) strcat(message,"windowed)");
 						else strcat(message,"fullscreen)");
 		messagetimeout = totclk+4000;

@@ -5,9 +5,12 @@ Windows layer code written by Ken Silverman (http://advsys.net/ken) (1997-2005)
 Additional modifications by Tom Dobrowolski (http://ged.ax.pl/~tomkh)
 You may use this code for non-commercial purposes as long as credit is maintained.
 ***************************************************************************************************/
-//#if defined(_MSC_VER) && (_MSC_VER >= 1020)
 #pragma once
-//#endif
+
+#pragma warning( disable : 4244 ) // conversion from 'double' to 'float'
+#pragma warning( disable : 4018 ) // signed/unsigned mismatch
+#pragma warning( disable : 4996 ) // Replace with safe strcopy
+#pragma warning( disable : 4309 ) // Truncation of constant
 
 
 #if !defined(SYSMAIN_C) && !defined(__cplusplus) && !defined(SYSMAIN)
@@ -42,10 +45,12 @@ You may use this code for non-commercial purposes as long as credit is maintaine
 	extern long (CALLBACK *peekwindowproc)(HWND,UINT,WPARAM,LPARAM);
 #else
 	#pragma pack(push,1)
-	typedef struct { unsigned char peRed, peGreen, peBlue, peFlags; } PALETTEENTRY;
+	typedef struct PALETTEENTRY{ unsigned char peRed, peGreen, peBlue, peFlags; } PALETTEENTRY;
 	#pragma pack(pop)
-	#define MAX_PATH 260
+	
 #endif
+
+#define MAX_PATH 260
 //extern long cputype;
 extern void setacquire (long mouse, long kbd);
 
@@ -58,7 +63,7 @@ extern void quitloop ();
 void uninitapp ();
 
 	//Video:
-typedef struct { long x, y; char c, r0, g0, b0, a0, rn, gn, bn, an; } validmodetype;
+typedef struct validmodetype { long x, y; char c, r0, g0, b0, a0, rn, gn, bn, an; } validmodetype;
 extern validmodetype curvidmodeinfo;
 extern long xres, yres, colbits, fullscreen, maxpages;
 extern PALETTEENTRY pal[256];
@@ -69,13 +74,6 @@ extern long clearscreen (long fillcolor);
 extern void updatepalette (long start, long danum);
 extern long getvalidmodelist (validmodetype **validmodelist);
 extern long changeres (long, long, long, long);
-
-	//Sound:
-#define KSND_3D 1 //Use LOGICAL OR (|) to combine flags
-#define KSND_MOVE 2
-#define KSND_LOOP 4
-#define KSND_LOPASS 8
-#define KSND_MEM 16
 
 #ifndef NOSOUND
 extern void playsound (const char *, long, float, void *, long);
@@ -92,6 +90,7 @@ extern void umixerbreathe ();
 extern char keystatus[256];     //bit0=1:down
 extern char ext_keystatus[256]; //bit0=1:down,bit1=1:was down
 extern void readkeyboard ();
+
 extern long keyread ();         //similar to kbhit()&getch() combined
 
 	//Mouse:
@@ -105,6 +104,7 @@ extern void readmouse (float *, float *, float *, long *);
 #endif
 extern long ismouseout (long, long);
 extern void setmouseout (void (*)(long, long), long, long);
+extern void* gethwnd();
 #endif //NOINPUT
 
 	//Timer:

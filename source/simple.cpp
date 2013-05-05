@@ -9,7 +9,10 @@ simple.obj : simple.c voxlap5.h sysmain.h
 #include "sysmain.h"
 #include "voxlap5.h"
 dpoint3d ipos, istr, ihei, ifor;
-
+char *sxlbuf = 0;
+#define MAXSPRITES 1024
+vx5sprite spr[MAXSPRITES];
+long sxlind[MAXSPRITES+1];
 vx5sprite desklamp;
 
 long initapp (long argc, char **argv)
@@ -17,7 +20,9 @@ long initapp (long argc, char **argv)
 	xres = 640; yres = 480; colbits = 32; fullscreen = 0;
 	initvoxlap();
 	kzaddstack("voxdata.zip");
-
+  vx5.fogcol = 0xffffffff; 
+  vx5.maxscandist = 128;
+  
 	#if VSID == 512
 		char * vox2load = "vxl/test-512x64.vxl";
 	#elif VSID == 1024

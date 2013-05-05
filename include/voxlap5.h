@@ -1,24 +1,97 @@
 #pragma once
+#include "porthacks.h"
+#include <xmmintrin.h>
 
 #define Voxlap_VERSION_MAJOR 5
 #define Voxlap_VERSION_MINOR 2
-#define Voxlap_GIT_HASH 521538f
+#define Voxlap_GIT_HASH b3518cd
 
 #define MAXXDIM 1024
 #define MAXYDIM 768
 
 #define PI 3.141592653589793
 #define VSID 1024 //Maximum .VXL dimensions in both x & y direction
-
+#define LVSID 10 
+#define PREC_TABLE 4096
 #define MAXZDIM 256 //Maximum .VXL dimensions in z direction (height)
 #define XYWRAP_DIM ((VSID*2)-1)
+#define SCPITCH 256
+#define SETSPHMAXRAD 256
+#define USEZBUFFER 0
 
 #pragma pack(push,1)
 
+#ifdef __GNUC__
+typedef short v2us __attribute__ ((vector_size (4)));
+typedef float v2sf __attribute__ ((vector_size (8)));
+typedef float v4sf __attribute__ ((vector_size (16)));
+#endif
+
+// 3 dimensional points don't have power of 2 vector
+// could be padded to correct length
 typedef struct { long x, y, z; } lpoint3d;
 typedef struct { float x, y, z; } point3d;
-typedef struct { float x, y, z, z2; } point4d;
 typedef struct { double x, y, z; } dpoint3d;
+
+typedef union
+{
+	struct { unsigned short x, y; };
+	short array[2];
+	#ifdef __GNUC__
+	v2us vec;
+	#endif
+	#ifdef _MSC_VER
+	//__ALIGN(16) __m32 vec;
+    __ALIGN(16) unsigned int vec;
+	#endif
+
+} uspoint2d;
+
+
+
+typedef union
+{
+	struct { long x, y; };
+    long array[2];
+    #ifdef __GNUC__
+	v2sf vec;
+    #endif
+    #ifdef _MSC_VER
+	__ALIGN(16) __m64 vec;
+    #endif
+} lpoint2d;
+
+typedef union
+{
+	struct { float x, y; };
+	float array[2];
+	#ifdef __GNUC__
+	v2sf vec;
+	#endif
+	#ifdef _MSC_VER
+	__ALIGN(16) __m64 vec;
+	#endif
+} point2d;
+
+typedef union
+{
+	struct { float x, y, z, z2; };
+	float array[4];
+	#ifdef __GNUC__
+	v4sf vec;
+	v2sf svec[2];
+	#endif
+	#ifdef _MSC_VER
+	__ALIGN(16) __m128 vec;
+	__ALIGN(16) __m64 svec[2];
+	#endif
+} point4d;
+
+typedef struct { lpoint3d bmin; lpoint3d bmax; long csgdel; } bbox_t;
+typedef struct bboxtyp { 
+	long x0, y0, z0, x1, y1, z1, csgdel;
+} bboxtyp;
+
 
 	//Sprite structures:
 typedef struct { long col; unsigned short z; char vis, dir; } kv6voxtype;
@@ -109,7 +182,7 @@ typedef struct { char z1, z0, x, y; } vspans;
 #ifndef VOXLAP5
 extern
 #endif
-struct
+struct vx5
 {
 	//------------------------ DATA coming from VOXLAP5 ------------------------
 
@@ -165,17 +238,11 @@ struct
 	//Initialization functions:
 extern long initvoxlap ();
 extern void uninitvoxlap ();
+extern char *voxalloc (long);
+extern void voxdealloc (const char *);
 
-	//File related functions:
-extern long loadsxl (const char *, char **, char **, char **);
-extern char *parspr (vx5sprite *, char **);
-extern void loadnul (dpoint3d *, dpoint3d *, dpoint3d *, dpoint3d *);
-extern long loaddta (const char *, dpoint3d *, dpoint3d *, dpoint3d *, dpoint3d *);
-extern long loadpng (const char *, dpoint3d *, dpoint3d *, dpoint3d *, dpoint3d *);
-extern void loadbsp (const char *, dpoint3d *, dpoint3d *, dpoint3d *, dpoint3d *);
-extern long loadvxl (const char *, dpoint3d *, dpoint3d *, dpoint3d *, dpoint3d *);
-extern long savevxl (const char *, dpoint3d *, dpoint3d *, dpoint3d *, dpoint3d *);
-extern long loadsky (const char *);
+#include "kfile_io.h"
+
 
 	//Screen related functions:
 extern void voxsetframebuffer (long, long, long, long);
@@ -187,14 +254,14 @@ extern void drawpoint3d (float, float, float, long);
 extern void drawline2d (float, float, float, float, long);
 extern void drawline3d (float, float, float, float, float, float, long);
 extern long project2d (float, float, float, float *, float *, float *);
-extern void drawspherefill (float, float, float, float, long);
+extern void drawspherefill (float, float, float, float, long );
 extern void drawpicinquad (long, long, long, long, long, long, long, long, float, float, float, float, float, float, float, float);
 extern void drawpolyquad (long, long, long, long, float, float, float, float, float, float, float, float, float, float, float, float, float, float, float, float, float, float);
-extern void print4x6 (long, long, long, long, const char *, ...);
-extern void print6x8 (long, long, long, long, const char *, ...);
+extern void print4x6 (long x, long y, long fcol, const long bcol, const char *fmt, ...);
+extern void print6x8 (long, long, long, const long, char *, ...);
 extern void drawtile (long, long, long, long, long, long, long, long, long, long, long, long);
 extern long screencapture32bit (const char *);
-extern long surroundcapture32bit (dpoint3d *, const char *, long);
+extern long surroundcapture32bit (const dpoint3d *, const char *, const long);
 
 	//Sprite related functions:
 extern kv6data *getkv6 (const char *);
@@ -203,7 +270,7 @@ extern void freekv6 (kv6data *kv6);
 extern void savekv6 (const char *, kv6data *);
 extern void getspr (vx5sprite *, const char *);
 extern kv6data *genmipkv6 (kv6data *);
-extern char *getkfilname (long);
+extern char *getkfilname (const long &);
 extern void animsprite (vx5sprite *, long);
 extern void drawsprite (vx5sprite *);
 extern long meltsphere (vx5sprite *, lpoint3d *, long);
@@ -217,23 +284,23 @@ extern void dorthorotate (double, double, double, dpoint3d *, dpoint3d *, dpoint
 extern void axisrotate (point3d *, point3d *, float);
 extern void slerp (point3d *, point3d *, point3d *, point3d *, point3d *, point3d *, point3d *, point3d *, point3d *, float);
 extern long cansee (point3d *, point3d *, lpoint3d *);
-extern void hitscan (dpoint3d *, dpoint3d *, lpoint3d *, long **, long *);
+extern void hitscan (const dpoint3d *, const dpoint3d *, lpoint3d *, long **, long *);
 extern void sprhitscan (dpoint3d *, dpoint3d *, vx5sprite *, lpoint3d *, kv6voxtype **, float *vsc);
 extern double findmaxcr (double, double, double, double);
 extern void clipmove (dpoint3d *, dpoint3d *, double);
 extern long triscan (point3d *, point3d *, point3d *, point3d *, lpoint3d *);
-extern void estnorm (long, long, long, point3d *);
+extern void estnorm (const long, const long, long, point3d *);
 
 	//VXL reading functions (fast!):
-extern long isvoxelsolid (long, long, long);
-extern long anyvoxelsolid (long, long, long, long);
-extern long anyvoxelempty (long, long, long, long);
-extern long getfloorz (long, long, long);
-extern long getcube (long, long, long);
+extern inline long isvoxelsolid (const long&, const long&, const long&);
+extern long anyvoxelsolid (const long&, const long&, const long&, const long&);
+extern long anyvoxelempty (const long&, const long&, const long&, const long&);
+extern long getfloorz (const long&, const long&, const long&);
+extern long getcube (const long&, const long&, const long&);
 
 	//VXL writing functions (optimized & bug-free):
-extern void setcube (long, long, long, long);
-extern void setsphere (lpoint3d *, long, long);
+#include "kmodelling.h"
+
 extern void setellipsoid (lpoint3d *, lpoint3d *, long, long, long);
 extern void setcylinder (lpoint3d *, lpoint3d *, long, long, long);
 extern void setrect (lpoint3d *, lpoint3d *, long);
@@ -255,32 +322,32 @@ extern void setnormflash (float, float, float, long, long);
 
 	//VXL MISC functions:
 extern void updatebbox (long, long, long, long, long, long, long);
+extern void updatebbox (bboxtyp, long);
 extern void updatevxl ();
 extern void genmipvxl (long, long, long, long);
 extern void updatelighting (long, long, long, long, long, long);
+//extern void updatelighting (bboxtyp);
 
-	//Falling voxels functions:
-extern void checkfloatinbox (long, long, long, long, long, long);
-extern void startfalls ();
-extern void dofall (long);
-extern long meltfall (vx5sprite *, long, long);
-extern void finishfalls ();
 
 	//Procedural texture functions:
-extern long curcolfunc (lpoint3d *);
-extern long floorcolfunc (lpoint3d *);
-extern long jitcolfunc (lpoint3d *);
-extern long manycolfunc (lpoint3d *);
-extern long sphcolfunc (lpoint3d *);
-extern long woodcolfunc (lpoint3d *);
-extern long pngcolfunc (lpoint3d *);
-extern long kv6colfunc (lpoint3d *);
+extern long curcolfunc (lpoint3d * __restrict);
+extern long floorcolfunc (lpoint3d * __restrict);
+extern long jitcolfunc (lpoint3d * __restrict);
+extern long manycolfunc (lpoint3d * __restrict);
+extern long sphcolfunc (lpoint3d * __restrict);
+extern long woodcolfunc (lpoint3d * __restrict);
+extern long pngcolfunc (lpoint3d * __restrict);
+extern long kv6colfunc (lpoint3d * __restrict);
 
 	//Editing backup/restore functions
 extern void voxbackup (long, long, long, long, long);
 extern void voxdontrestore ();
 extern void voxrestore ();
 extern void voxredraw ();
+
+
+extern long lightvox (const long); // For kscreen
+extern long inkhash (const char *, long *); // For kscreen
 
 #include "kplib.h"
 

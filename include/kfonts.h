@@ -1,5 +1,10 @@
+#pragma once
+#include <stdarg.h>
+#include <stdio.h>
 
-static const long font4x6[] = //256 DOS chars, from Ken's Build SMALLFNT
+#include "kglobals.h"
+extern "C" tiletype gdd;
+const long font4x6[] = //256 DOS chars, from Ken's Build SMALLFNT
 {
 	0x000000,0x6f9f60,0x69f960,0xaffe40,0x4efe40,0x6ff6f0,0x66f6f0,0x000000,
 	0xeeaee0,0x000000,0x000000,0x000000,0x000000,0x000000,0x7755c0,0x96f690,
@@ -35,7 +40,7 @@ static const long font4x6[] = //256 DOS chars, from Ken's Build SMALLFNT
 	0xeae000,0x0cc000,0x00c000,0x644c40,0xcaa000,0xc4e000,0x0eee00,0x000000,
 };
 	//NOTE: font is stored vertically first! (like .ART files)
-static const __int64 font6x8[] = //256 DOS chars, from: DOSAPP.FON (tab blank)
+const int64_t font6x8[] = //256 DOS chars, from: DOSAPP.FON (tab blank)
 {
 	0x3E00000000000000,0x6F6B3E003E455145,0x1C3E7C3E1C003E6B,0x3000183C7E3C1800,
 	0x7E5C180030367F36,0x000018180000185C,0x0000FFFFE7E7FFFF,0xDBDBC3FF00000000,
@@ -86,3 +91,132 @@ static const __int64 font6x8[] = //256 DOS chars, from: DOSAPP.FON (tab blank)
 	0x2A08080000003F40,0x0012241224000808,0x0000000609090600,0x0008000000001818,
 	0x02023E4030000000,0x0900000E010E0100,0x3C3C3C0000000A0D,0x000000000000003C,
 };
+
+/** Draws 4x6 font on screen (very fast!)
+ *
+ *  @param x x of top-left corner
+ *  @param y y of top-left corner
+ *  @param fcol foreground color (32-bit RGB format)
+ *  @param bcol background color (32-bit RGB format) or -1 for transparent
+ *  @param fmt string - same syntax as printf
+ */
+void print4x6 (long x, long y, long fcol, const long bcol, const char *fmt, ...)
+{
+	va_list arglist;
+	unsigned char st[280], *c;
+	long i, j;
+
+	if (!fmt) return;
+	va_start(arglist,fmt);
+	vsprintf((char*)st,fmt,arglist);
+	va_end(arglist);
+
+	y = y*bytesperline+(x<<2)+frameplace;
+	if (bcol < 0)
+	{
+		for(j=20;j>=0;y+=bytesperline,j-=4)
+			for(c=st,x=y;*c;c++,x+=16)
+			{
+				i = (font4x6[*c]>>j);
+				if (i&8) *(long *)(x   ) = fcol;
+				if (i&4) *(long *)(x+ 4) = fcol;
+				if (i&2) *(long *)(x+ 8) = fcol;
+				if (i&1) *(long *)(x+12) = fcol;
+				if ((*c) == 9) x += 32;
+			}
+		return;
+	}
+	fcol -= bcol;
+	for(j=20;j>=0;y+=bytesperline,j-=4)
+		for(c=st,x=y;*c;c++,x+=16)
+		{
+			i = (font4x6[*c]>>j);
+			*(long *)(x   ) = (((i<<28)>>31)&fcol)+bcol;
+			*(long *)(x+ 4) = (((i<<29)>>31)&fcol)+bcol;
+			*(long *)(x+ 8) = (((i<<30)>>31)&fcol)+bcol;
+			*(long *)(x+12) = (((i<<31)>>31)&fcol)+bcol;
+			if ((*c) == 9) { for(i=16;i<48;i+=4) *(long *)(x+i) = bcol; x += 32; }
+		}
+}
+
+/** Draws 6x8 font on screen (very fast!)
+ *
+ *  @param x x of top-left corner
+ *  @param y y of top-left corner
+ *  @param fcol foreground color (32-bit RGB format)
+ *  @param bcol background color (32-bit RGB format) or -1 for transparent
+ *  @param fmt string - same syntax as printf
+ */
+void print6x8 (long x, long y, long fcol, const long bcol, char *fmt, ...)
+{
+	va_list arglist;
+	char st[280], *c, *v;
+	long i, j;
+
+	if (!fmt) return;
+	va_start(arglist,fmt);
+	vsprintf(st,fmt,arglist);
+	va_end(arglist);
+
+	y = y*bytesperline+(x<<2)+frameplace;
+	if (bcol < 0)
+	{
+		for(j=1;j<256;y+=bytesperline,j<<=1)
+			for(c=st,x=y;*c;c++,x+=24)
+			{
+				v = (char *)(((long)font6x8) + ((long)c[0])*6);
+				if (v[0]&j) *(long *)(x   ) = fcol;
+				if (v[1]&j) *(long *)(x+ 4) = fcol;
+				if (v[2]&j) *(long *)(x+ 8) = fcol;
+				if (v[3]&j) *(long *)(x+12) = fcol;
+				if (v[4]&j) *(long *)(x+16) = fcol;
+				if (v[5]&j) *(long *)(x+20) = fcol;
+				if ((*c) == 9) x += ((2*6)<<2);
+			}
+		return;
+	}
+	fcol -= bcol;
+	for(j=1;j<256;y+=bytesperline,j<<=1)
+		for(c=st,x=y;*c;c++,x+=24)
+		{
+			v = (char *)(((long)font6x8) + ((long)c[0])*6);
+			*(long *)(x   ) = (((-(v[0]&j))>>31)&fcol)+bcol;
+			*(long *)(x+ 4) = (((-(v[1]&j))>>31)&fcol)+bcol;
+			*(long *)(x+ 8) = (((-(v[2]&j))>>31)&fcol)+bcol;
+			*(long *)(x+12) = (((-(v[3]&j))>>31)&fcol)+bcol;
+			*(long *)(x+16) = (((-(v[4]&j))>>31)&fcol)+bcol;
+			*(long *)(x+20) = (((-(v[5]&j))>>31)&fcol)+bcol;
+			if ((*c) == 9) { for(i=24;i<72;i+=4) *(long *)(x+i) = bcol; x += ((2*6)<<2); }
+		}
+}
+
+/** Draws 6x8 font on screen (very fast!) specific to slab6
+ *
+ *  @param ox x of top-left corner
+ *  @param y y of top-left corner
+ *  @param fcol foreground color (32-bit RGB format)
+ *  @param bcol background color (32-bit RGB format) or -1 for transparent
+ *  @param fmt string - same syntax as printf
+ */
+void print6x8_s6 (long ox, long y, long fcol, const long bcol, const char *fmt, ...)
+{
+	va_list arglist;
+	char st[1024], *c, *v, *cp, *cpx;
+	long i, j, ie, x;
+
+	if (!fmt) return;
+	va_start(arglist,fmt);
+	if (_vsnprintf((char *)&st,sizeof(st)-1,fmt,arglist)) st[sizeof(st)-1] = 0;
+	va_end(arglist);
+
+	cp = (char *)(y*gdd.p+gdd.f);
+	for(j=1;j<256;y++,cp=(char *)(((long)cp)+gdd.p),j+=j)
+		if ((unsigned)y < (unsigned)gdd.y)
+			for(c=st,x=ox;*c;c++,x+=6)
+			{
+				v = (char *)(((long)*c)*6 + (long)font6x8);
+				ie = MIN(gdd.x-x,6); cpx = &cp[x];
+				for(i=MAX(-x,0);i<ie;i++) { if (v[i]&j) cpx[i] = fcol; else if (bcol >= 0) cpx[i] = bcol; }
+				if ((*c) == 9) { if (bcol >= 0) for(i=6;i<18;i++) cpx[i] = bcol; x += 2*6; }
+			}
+}

@@ -13,48 +13,62 @@ You may use this code for non-commercial purposes as long as credit is maintaine
 	//are in include path
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "sysmain.h"
+#include "kglobals.h"
+#include "cpu_detect.h"
+#include "ktimer.h"
 
 #ifndef NODRAW
-#define DIRECTDRAW_VERSION 0x0300
-#include <ddraw.h>
+    #define DIRECTDRAW_VERSION 0x0300
+    #include <ddraw.h>
 #endif
 #ifndef NOINPUT
-#define DIRECTINPUT_VERSION 0x0300
-#include <dinput.h>
+    #define DIRECTINPUT_VERSION 0x0300
+    #include <dinput.h>
 #endif
 #ifndef NOSOUND
-#define DIRECTSOUND_VERSION 0x0300
-#include <mmsystem.h> //dsound.h requires this when using LEAN_AND_MEAN
-#include <dsound.h>
-#ifndef USEKZ
-#include <stdio.h> //for fopen
+    #define DIRECTSOUND_VERSION 0x0300
+    #include <mmsystem.h> //dsound.h requires this when using LEAN_AND_MEAN
+    #include <dsound.h>
+
+    #ifdef USEKZ
+        #include <stdio.h> //for fopen
+        #include "kplib.h"
+    #endif
+
+    #define DSOUNDINITCOM 1 //0=Link DSOUND.DLL, 1=Use COM interface to init DSOUND
+    extern LPDIRECTSOUND dsound; //Defined later
+    LPDIRECTSOUND dsound = 0;
+    #ifndef USEKENSOUND
+        #define USEKENSOUND 1   //0=playsound undefined (umixer only), 1=Ken's fancy sound renderer, 2=Standard Directsound secondary buffers
+    #endif
+    #define USETHREADS 20   //0=Disable, nonzero=enable multithreading and this is sleep value (20 is good)
+                                    //Use threads to fix audio gaps (and possibly other bugs too!)
 #else
-extern int kzopen (const char *);
-extern int kzread (void *, int);
-extern int kzseek (int, int);
-extern void kzclose ();
-extern int kzeof ();
+    #define USETHREADS 0
 #endif
-#define DSOUNDINITCOM 1 //0=Link DSOUND.DLL, 1=Use COM interface to init DSOUND
-#ifndef USEKENSOUND
-#define USEKENSOUND 1   //0=playsound undefined (umixer only), 1=Ken's fancy sound renderer, 2=Standard Directsound secondary buffers
-#endif
-#define USETHREADS 20   //0=Disable, nonzero=enable multithreading and this is sleep value (20 is good)
-								//Use threads to fix audio gaps (and possibly other bugs too!)
-#else
-#define USETHREADS 0
-#endif
+
+static long quitprogram = 0, quitparam;
 
 #if ((USEKENSOUND == 1) && (USETHREADS != 0))
 	//WinXP:Sleep(0)=infinite,Sleep(1-16)=64hz,Sleep(17-32)=32hz,Sleep(33-48)=21.3hz, etc...)
 	//Remember to add /MD, /MT or /link libcmt.lib kernel32.lib /nodefaultlib to compile options!
-#include <process.h>
+#  include <process.h>
 static HANDLE hmutx;
-#define ENTERMUTX WaitForSingleObject(hmutx,USETHREADS) //Do NOT use ,INFINITE) - too dangerous!
-#define LEAVEMUTX ReleaseMutex(hmutx)
+#  define ENTERMUTX WaitForSingleObject(hmutx,USETHREADS) //Do NOT use ,INFINITE) - too dangerous!
+#  define LEAVEMUTX ReleaseMutex(hmutx)
+
+static void kensoundthread (void *_);
+
 #else
-#define ENTERMUTX
-#define LEAVEMUTX
+#  define ENTERMUTX
+#  define LEAVEMUTX
+#endif
+
+#if !defined(NOSOUND)
+    #define DSOUND
+    #include "ksound.h"
+    #undef DSOUND
 #endif
 
 #pragma warning(disable:4730)
@@ -74,7 +88,7 @@ extern long initapp (long argc, char **argv);
 extern void uninitapp ();
 extern void doframe ();
 
-static long quitprogram = 0, quitparam;
+
 void breath();
 
 	//Global window variables
@@ -90,158 +104,20 @@ long xres = 640, yres = 480, colbits = 32, fullscreen = 0, maxpages = 8;
 	// Note! Without clipper blit is faster but only with software bliter
 //#define NO_CLIPPER
 
-//======================== CPU detection code begins ========================
+void* gethwnd()
+{
+#ifdef _WIN32
+    return ghwnd;
+#else
+    return NULL;
+#endif
+}
 
-long cputype = 0;
+
 static OSVERSIONINFO osvi;
 
-#ifdef __WATCOMC__
-
-long testflag (long);
-#pragma aux testflag =\
-	"pushfd"\
-	"pop eax"\
-	"mov ebx, eax"\
-	"xor eax, ecx"\
-	"push eax"\
-	"popfd"\
-	"pushfd"\
-	"pop eax"\
-	"xor eax, ebx"\
-	"mov eax, 1"\
-	"jne menostinx"\
-	"xor eax, eax"\
-	"menostinx:"\
-	parm nomemory [ecx]\
-	modify exact [eax ebx]\
-	value [eax]
-
-void cpuid (long, long *);
-#pragma aux cpuid =\
-	".586"\
-	"cpuid"\
-	"mov dword ptr [esi], eax"\
-	"mov dword ptr [esi+4], ebx"\
-	"mov dword ptr [esi+8], ecx"\
-	"mov dword ptr [esi+12], edx"\
-	parm [eax][esi]\
-	modify exact [eax ebx ecx edx]\
-	value
-
-#endif
-#ifdef _MSC_VER
-
-#pragma warning(disable:4799) //I know how to use EMMS
-
-static _inline long testflag (long c)
-{
-	_asm
-	{
-		mov ecx, c
-		pushfd
-		pop eax
-		mov edx, eax
-		xor eax, ecx
-		push eax
-		popfd
-		pushfd
-		pop eax
-		xor eax, edx
-		mov eax, 1
-		jne menostinx
-		xor eax, eax
-		menostinx:
-	}
-}
-
-static _inline void cpuid (long a, long *s)
-{
-	_asm
-	{
-		push ebx
-		push esi
-		mov eax, a
-		cpuid
-		mov esi, s
-		mov dword ptr [esi+0], eax
-		mov dword ptr [esi+4], ebx
-		mov dword ptr [esi+8], ecx
-		mov dword ptr [esi+12], edx
-		pop esi
-		pop ebx
-	}
-}
-
-#endif
-
-	//Bit numbers of return value:
-	//0:FPU, 4:RDTSC, 15:CMOV, 22:MMX+, 23:MMX, 25:SSE, 26:SSE2, 30:3DNow!+, 31:3DNow!
-static long getcputype ()
-{
-	long i, cpb[4], cpid[4];
-	if (!testflag(0x200000)) return(0);
-	cpuid(0,cpid); if (!cpid[0]) return(0);
-	cpuid(1,cpb); i = (cpb[3]&~((1<<22)|(1<<30)|(1<<31)));
-	cpuid(0x80000000,cpb);
-	if (((unsigned long)cpb[0]) > 0x80000000)
-	{
-		cpuid(0x80000001,cpb);
-		i |= (cpb[3]&(1<<31));
-		if (!((cpid[1]^0x68747541)|(cpid[3]^0x69746e65)|(cpid[2]^0x444d4163))) //AuthenticAMD
-			i |= (cpb[3]&((1<<22)|(1<<30)));
-	}
-	if (i&(1<<25)) i |= (1<<22); //SSE implies MMX+ support
-	return(i);
-}
-
-//========================= CPU detection code ends =========================
 
 //================== Fast & accurate TIMER FUNCTIONS begins ==================
-
-#if 0
-#ifdef __WATCOMC__
-
-__int64 rdtsc64 ();
-#pragma aux rdtsc64 = "rdtsc" value [edx eax] modify nomemory parm nomemory;
-
-#endif
-#ifdef _MSC_VER
-
-static __forceinline __int64 rdtsc64 () { _asm rdtsc }
-
-#endif
-
-static __int64 pertimbase, rdtimbase, nextimstep;
-static double perfrq, klockmul, klockadd;
-
-void initklock ()
-{
-	__int64 q;
-	QueryPerformanceFrequency((LARGE_INTEGER *)&q);
-	perfrq = (double)q;
-	rdtimbase = rdtsc64();
-	QueryPerformanceCounter((LARGE_INTEGER *)&pertimbase);
-	nextimstep = 4194304; klockmul = 0.000000001; klockadd = 0.0;
-}
-
-void readklock (double *tim)
-{
-	__int64 q = rdtsc64()-rdtimbase;
-	if (q > nextimstep)
-	{
-		__int64 p;
-		double d;
-		QueryPerformanceCounter((LARGE_INTEGER *)&p);
-		d = klockmul; klockmul = ((double)(p-pertimbase))/(((double)q)*perfrq);
-		klockadd += (d-klockmul)*((double)q);
-		do { nextimstep <<= 1; } while (q > nextimstep);
-	}
-	(*tim) = ((double)q)*klockmul + klockadd;
-}
-#else
-
-static __int64 klocksub;
-static double klockmul;
 
 void initklock ()
 {
@@ -257,8 +133,6 @@ void readklock (double *tim)
 	QueryPerformanceCounter((LARGE_INTEGER *)&q);
 	(*tim) = ((double)(q-klocksub))*klockmul;
 }
-
-#endif
 
 //=================== Fast & accurate TIMER FUNCTIONS ends ===================
 
@@ -281,7 +155,7 @@ static LPDIRECT3DSURFACE8 d3dsur = 0;
 static LPDIRECT3DVERTEXBUFFER8 gpvb = 0;
 static LPDIRECT3DTEXTURE8 gpt[2] = {0};
 #define D3DFVF (D3DFVF_XYZ|D3DFVF_DIFFUSE|D3DFVF_TEX1)
-typedef struct { float x, y, z; unsigned long c; float u, v; } vert3d;
+typedef struct vert3d { float x, y, z; unsigned long c; float u, v; } vert3d;
 #endif
 static long d3df = 0, d3dp = 0;
 
@@ -1471,23 +1345,11 @@ static long cantlockprimary = 0; //FUKFUKFUKFUK
 
   //The official DirectDraw method for retrieving video modes!
 #define MAXVALIDMODES 256
-typedef struct { long x, y; char c, r0, g0, b0, a0, rn, gn, bn, an; } validmodetype;
+//typedef struct { long x, y; char c, r0, g0, b0, a0, rn, gn, bn, an; } validmodetype;
 static validmodetype validmodelist[MAXVALIDMODES];
 static long validmodecnt = 0;
 validmodetype curvidmodeinfo;
 
-#ifdef __WATCOMC__
-
-#pragma aux bsf = "bsf eax, eax" parm [eax] modify nomemory exact [eax] value [eax]
-#pragma aux bsr = "bsr eax, eax" parm [eax] modify nomemory exact [eax] value [eax]
-
-#endif
-#ifdef _MSC_VER
-
-static _inline long bsf (long a) { _asm bsf eax, a } //is it safe to assume eax is return value?
-static _inline long bsr (long a) { _asm bsr eax, a } //is it safe to assume eax is return value?
-
-#endif
 
 static void grabmodeinfo (long x, long y, DDPIXELFORMAT *ddpf, validmodetype *valptr)
 {
@@ -2569,7 +2431,7 @@ initkeyboard_bad:;
 	return(0);
 }
 
-long readkeyboard ()
+void readkeyboard ()
 {
 	HRESULT hr;
 	long i;
@@ -2584,7 +2446,8 @@ long readkeyboard ()
 		gpKeyboard->Acquire(); shkeystatus = 0;
 		hr = gpKeyboard->GetDeviceData(sizeof(DIDEVICEOBJECTDATA),KbdBuffer,&dwItems,0);
 	}
-	if (hr < 0) return(0);
+	//if (hr < 0) return(0);
+	if (hr < 0) return;
 	for(i=0;i<(long)dwItems;i++)
 	{
 		lpdidod = &KbdBuffer[i];
@@ -2597,7 +2460,7 @@ long readkeyboard ()
 		if (lpdidod->dwData&128) ext_keystatus[lpdidod->dwOfs] = 1|2;
 								  else ext_keystatus[lpdidod->dwOfs] &= ~1; // preserve bit 2 only
 	}
-	return(dwItems);
+	//return(dwItems);
 }
 
 
@@ -2766,213 +2629,13 @@ void smartsleep (long timeoutms)
 // Kensound code begins -------------------------------------------------------
 
 #ifndef NOSOUND
-//--------------------------------------------------------------------------------------------------
-#define MAXUMIXERS 256
-#define UMIXERBUFSIZ 65536
-typedef struct
-{
-	LPDIRECTSOUNDBUFFER streambuf;
-	long samplerate, numspeakers, bytespersample, oplaycurs;
-	void (*mixfunc)(void *dasnd, long danumbytes);
-} umixertyp;
-static umixertyp umixer[MAXUMIXERS];
-static long umixernum = 0;
-
-extern LPDIRECTSOUND dsound; //Defined later
-
-long umixerstart (void damixfunc (void *, long), long dasamprate, long danumspeak, long dabytespersamp)
-{
-	DSBUFFERDESC dsbdesc;
-	DSBCAPS dsbcaps;
-	WAVEFORMATEX wfx;
-	void *w0 = 0, *w1 = 0;
-	unsigned long l0 = 0, l1 = 0;
-
-	if ((dasamprate <= 0) || (danumspeak <= 0) || (dabytespersamp <= 0) || (umixernum >= MAXUMIXERS)) return(-1);
-
-	umixer[umixernum].samplerate = dasamprate;
-	umixer[umixernum].numspeakers = danumspeak;
-	umixer[umixernum].bytespersample = dabytespersamp;
-
-	wfx.wFormatTag = WAVE_FORMAT_PCM;
-	wfx.nSamplesPerSec = dasamprate;
-	wfx.wBitsPerSample = (dabytespersamp<<3);
-	wfx.nChannels = danumspeak;
-	wfx.nBlockAlign = (wfx.wBitsPerSample>>3) * wfx.nChannels;
-	wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
-	wfx.cbSize = 0;
-
-	memset(&dsbdesc,0,sizeof(DSBUFFERDESC));
-	dsbdesc.dwSize = sizeof(DSBUFFERDESC);
-	dsbdesc.dwFlags = DSBCAPS_GETCURRENTPOSITION2|DSBCAPS_LOCSOFTWARE|DSBCAPS_GLOBALFOCUS;
-	dsbdesc.dwBufferBytes = UMIXERBUFSIZ;
-	dsbdesc.lpwfxFormat = &wfx;
-	if (dsound->CreateSoundBuffer(&dsbdesc,&umixer[umixernum].streambuf,0) != DS_OK) return(-1);
-
-		//Zero out streaming buffer before beginning play
-	umixer[umixernum].streambuf->Lock(0,UMIXERBUFSIZ,&w0,&l0,&w1,&l1,0);
-	if (w0) memset(w0,(dabytespersamp-2)&128,l0);
-	if (w1) memset(w1,(dabytespersamp-2)&128,l1);
-	umixer[umixernum].streambuf->Unlock(w0,l0,w1,l1);
-
-	umixer[umixernum].streambuf->SetCurrentPosition(0);
-	umixer[umixernum].streambuf->Play(0,0,DSBPLAY_LOOPING);
-
-	umixer[umixernum].oplaycurs = 0;
-	umixer[umixernum].mixfunc = damixfunc;
-	umixernum++;
-
-	return(umixernum-1);
-}
-
-void umixerkill (long i)
-{
-	if ((unsigned long)i >= umixernum) return;
-	if (umixer[i].streambuf)
-		{ umixer[i].streambuf->Stop(); umixer[i].streambuf->Release(); umixer[i].streambuf = 0; }
-	umixernum--; if (i != umixernum) umixer[i] = umixer[umixernum];
-}
-
-void umixerbreathe ()
-{
-	void *w0 = 0, *w1 = 0;
-	unsigned long l, l0 = 0, l1 = 0, playcurs, writcurs;
-	long i;
-
-	for(i=0;i<umixernum;i++)
-	{
-		if (!umixer[i].streambuf) continue;
-		if (umixer[i].streambuf->GetCurrentPosition(&playcurs,&writcurs) != DS_OK) continue;
-		playcurs += ((umixer[i].samplerate/8)<<(umixer[i].bytespersample+umixer[i].numspeakers-2));
-		l = (((playcurs-umixer[i].oplaycurs)&(UMIXERBUFSIZ-1))>>(umixer[i].bytespersample+umixer[i].numspeakers-2));
-		if (l <= 256) continue;
-		if (umixer[i].streambuf->Lock(umixer[i].oplaycurs&(UMIXERBUFSIZ-1),l<<(umixer[i].bytespersample+umixer[i].numspeakers-2),&w0,&l0,&w1,&l1,0) != DS_OK) continue;
-		if (w0) umixer[i].mixfunc(w0,l0);
-		if (w1) umixer[i].mixfunc(w1,l1);
-		umixer[i].oplaycurs += l0+l1;
-		umixer[i].streambuf->Unlock(w0,l0,w1,l1);
-	}
-}
-//--------------------------------------------------------------------------------------------------
-typedef struct { float x, y, z; } point3d;
 #if (USEKENSOUND == 1)
-#include <math.h>
-
-	//Internal streaming buffer variables:
-#define SNDSTREAMSIZ 16384 //(16384) Keep this a power of 2!
-#define MINBREATHREND 256  //(256) Keep this high to avoid clicks, but much smaller than SNDSTREAMSIZ!
-#define LSAMPREC 10        //(11) No WAV file can have more than 2^(31-LSAMPREC) samples
-#define MAXPLAYINGSNDS 256 //(256)
-#define VOLSEPARATION 1.f  //(1.f) Range: 0 to 1, .5 good for headphones, 1 good for speakers
-#define EARSEPARATION 8.f  //(8.f) Used for L/R sample shifting
-#define SNDMINDIST 32.f    //(32.f) Shortest distance where volume is max / volume scale factor
-#define SNDSPEED 4096.f    //(4096.f) Speed of sound in units per second
-#define NUMCOEF 4          //(4) # filter coefficients (4 and 8 are good choices)
-#define LOGCOEFPREC 5      //(5) number of fractional bits of precision: 5 is ok
-#define COEFRANG 32757     //(32757) DON'T make this > 32757 (not a typo) or else it'll overflow
-#define KSND_3D 1
-#define KSND_MOVE 2
-#define KSND_LOOP 4
-#define KSND_LOPASS 8
-#define KSND_MEM 16
-#define KSND_LOOPFADE 32    //for internal use only
-
-typedef struct //For sounds longer than SNDSTREAMSIZ
-{
-	point3d *ptr; //followstat (-1 means not 3D sound, 0 means 3D sound but don't follow, else follow 3D!)
-	point3d p;    //current position
-	long flags;   //Bit0:1=3D, Bit1:1=follow 3D, Bit2:1=loop
-	long ssnd;    //source sound
-	long ispos;   //sub-sample counter (before doppler delay)
-	long ispos0;  //L sub-sample counter
-	long ispos1;  //R sub-sample counter
-	long isinc;   //sub-sample increment
-	long ivolsc;  //volume scale
-	long ivolsc0; //L volume scale
-	long ivolsc1; //R volume scale
-	short *coefilt; //pointer to coef (for low pass filter, etc...)
-} rendersndtyp;
-static rendersndtyp rendersnd[MAXPLAYINGSNDS];
-static long numrendersnd = 0;
-
-LPDIRECTSOUNDBUFFER streambuf = 0;
-#endif
-LPDIRECTSOUND dsound = 0;
-#if (USEKENSOUND == 1)
-
-	//format: (used by audplay* to cache filenames&files themselves)
-	//[index to next hashindex or -1][index to last filnam][ptr to snd_buf][char snd_filnam[?]\0]
-#define AUDHASHINITSIZE 8192
-static char *audhashbuf = 0;
-#define AUDHASHEADSIZE 256 //must be power of 2
-static long audhashead[AUDHASHEADSIZE], audhashpos, audlastloadedwav, audhashsiz;
-
-static point3d audiopos, audiostr, audiohei, audiofor;
-static float rsamplerate;
-static long lsnd[SNDSTREAMSIZ>>1], samplerate, numspeakers, bytespersample, oplaycurs = 0;
-static char gshiftval = 0;
-__declspec(align(16)) static short coef[NUMCOEF<<LOGCOEFPREC]; //Sound re-scale filter coefficients
-__declspec(align(16)) static short coeflopass[NUMCOEF<<LOGCOEFPREC]; //Sound re-scale filter coefficients
-
-
-	//Same as: stricmp(st0,st1) except: '/' == '\'
-static long filnamcmp (const char *st0, const char *st1)
-{
-	long i;
-	char ch0, ch1;
-
-	for(i=0;st0[i];i++)
-	{
-		ch0 = st0[i]; if ((ch0 >= 'a') && (ch0 <= 'z')) ch0 -= 32;
-		ch1 = st1[i]; if ((ch1 >= 'a') && (ch1 <= 'z')) ch1 -= 32;
-		if (ch0 == '/') ch0 = '\\';
-		if (ch1 == '/') ch1 = '\\';
-		if (ch0 != ch1) return(-1);
-	}
-	if (!st1[i]) return(0);
-	return(-1);
-}
-
-static long audcalchash (const char *st)
-{
-	long i, hashind;
-	char ch;
-
-	for(i=0,hashind=0;st[i];i++)
-	{
-		ch = st[i];
-		if ((ch >= 'a') && (ch <= 'z')) ch -= 32;
-		if (ch == '/') ch = '\\';
-		hashind = (ch - hashind*3);
-	}
-	return(hashind&(AUDHASHEADSIZE-1));
-}
-
-static long audcheckhashsiz (long siz)
-{
-	long i;
-
-	if (!audhashbuf) //Initialize hash table on first call
-	{
-		memset(audhashead,-1,sizeof(audhashead));
-		if (!(audhashbuf = (char *)malloc(AUDHASHINITSIZE))) return(0);
-		audhashpos = 0; audlastloadedwav = -1; audhashsiz = AUDHASHINITSIZE;
-	}
-	if (audhashpos+siz > audhashsiz) //Make sure string fits in audhashbuf
-	{
-		i = audhashsiz; do { i <<= 1; } while (audhashpos+siz > i);
-		if (!(audhashbuf = (char *)realloc(audhashbuf,i))) return(0);
-		audhashsiz = i;
-	}
-	return(1);
-}
-
 static void kensoundclose ()
 {
 	numrendersnd = 0;
 
-	ENTERMUTX;
-	if (streambuf) streambuf->Stop();
+
+	if (streambuf) ((LPDIRECTSOUNDBUFFER)streambuf->buf)->Stop();
 
 	if (audhashbuf)
 	{
@@ -2983,10 +2646,10 @@ static void kensoundclose ()
 	}
 	audhashpos = audhashsiz = 0;
 
-	if (streambuf) { streambuf->Release(); streambuf = 0; }
+	if (streambuf) { ((LPDIRECTSOUNDBUFFER)streambuf->buf)->Release(); streambuf = 0; }
 	LEAVEMUTX;
 }
-
+/*
 #define PI 3.14159265358979323
 static void initfilters ()
 {
@@ -3023,7 +2686,7 @@ static void initfilters ()
 		for(j=0;j<NUMCOEF;j++) coeflopass[i*NUMCOEF+j] = (short)(fcoef[j]*f3);
 	}
 }
-
+*/
 long kensoundflags = DSBCAPS_GETCURRENTPOSITION2;
 static int kensoundinit (LPDIRECTSOUND dsound, int samprate, int numchannels, int bytespersamp)
 {
@@ -3053,404 +2716,24 @@ static int kensoundinit (LPDIRECTSOUND dsound, int samprate, int numchannels, in
 	bufdesc.dwBufferBytes = SNDSTREAMSIZ;
 	bufdesc.dwReserved = 0;
 	bufdesc.lpwfxFormat = &wft;
-	if (dsound->CreateSoundBuffer(&bufdesc,&streambuf,0) != DS_OK) return(-1);
+	if (dsound->CreateSoundBuffer(&bufdesc,((LPDIRECTSOUNDBUFFER*)&streambuf->buf),0) != DS_OK) return(-1);
 
 	//streambuf->SetVolume(curmusicvolume);
 	//streambuf->SetFrequency(curmusicfrequency);
 	//streambuf->SetPan(curmusicpan);
 
 		//Zero out streaming buffer before beginning play
-	streambuf->Lock(0,SNDSTREAMSIZ,&w0,&l0,&w1,&l1,0);
+	((LPDIRECTSOUNDBUFFER)streambuf->buf)->Lock(0,SNDSTREAMSIZ,&w0,&l0,&w1,&l1,0);
 	if (w0) memset(w0,(bytespersample-2)&128,l0);
 	if (w1) memset(w1,(bytespersample-2)&128,l1);
-	streambuf->Unlock(w0,l0,w1,l1);
+	((LPDIRECTSOUNDBUFFER)streambuf->buf)->Unlock(w0,l0,w1,l1);
 
 	initfilters();
 
-	streambuf->SetCurrentPosition(0);
-	streambuf->Play(0,0,DSBPLAY_LOOPING);
+	((LPDIRECTSOUNDBUFFER)streambuf->buf)->SetCurrentPosition(0);
+	((LPDIRECTSOUNDBUFFER)streambuf->buf)->Play(0,0,DSBPLAY_LOOPING);
 
 	return(0);
-}
-
-static __forceinline long mulshr16 (long a, long d)
-{
-	_asm
-	{
-		mov eax, a
-		imul d
-		shrd eax, edx, 16
-	}
-}
-
-static __forceinline long mulshr32 (long a, long d)
-{
-	_asm
-	{
-		mov eax, a
-		imul d
-		mov eax, edx
-	}
-}
-
-	//   ssnd: source sound
-	//  ispos: sub-sample counter
-	//  isinc: sub-sample increment per destination sample
-	// ivolsc: 31-bit volume scale
-	//ivolsci: 31-bit ivolsc increment per destination sample
-	//   lptr: 32-bit sound pointer (step by 8 because rendersamps only renders 1 channel!)
-	//  nsamp: number of destination samples to render
-static void rendersamps (long dasnd, long ispos, long isinc, long ivolsc, long ivolsci, long *lptr, long nsamp, short *coefilt)
-{
-	long i, j, k;
-
-	i = isinc*nsamp + ispos; if (i < isinc)              return; //ispos <  0 for all samples!
-	j = *(long *)(dasnd-8);  if ((ispos>>LSAMPREC) >= j) return; //ispos >= j for all samples!
-		//Clip off low ispos
-	if (ispos < 0) { k = (isinc-1-ispos)/isinc; ivolsc += ivolsci*k; ispos += isinc*k; lptr += k*2; nsamp -= k; }
-	if (((i-isinc)>>LSAMPREC) >= j) nsamp = ((j<<LSAMPREC)-ispos+isinc-1)/isinc; //Clip off high ispos
-
-#if (NUMCOEF == 1)
-	do //Very fast sound rendering; terrible quality!
-	{
-		lptr[0] += mulshr32(((short *)dasnd)[ispos>>LSAMPREC],ivolsc);
-		ivolsc += ivolsci; ispos += isinc; lptr += 2; nsamp--;
-	} while (nsamp);
-#elif (NUMCOEF == 2)
-	short *ssnd;  //Fast sound rendering; ok quality
-	do
-	{
-		ssnd = (short *)(((ispos>>LSAMPREC)<<1)+dasnd);
-		lptr[0] += mulshr32((long)(((((long)ssnd[1])-((long)ssnd[0]))*(ispos&((1<<LSAMPREC)-1)))>>LSAMPREC)+((long)ssnd[0]),ivolsc);
-		ivolsc += ivolsci; ispos += isinc; lptr += 2; nsamp--;
-	} while (nsamp);
-#elif (NUMCOEF == 4)
-#if 0
-	short *soef, *ssnd; //Slow sound rendering; great quality
-	do
-	{
-		ssnd = (short *)(((ispos>>LSAMPREC)<<1)+dasnd);
-		soef = &coef[((ispos&((1<<LSAMPREC)-1))>>(LSAMPREC-LOGCOEFPREC))<<2];
-		lptr[0] += mulshr32((long)ssnd[0]*(long)soef[0]+
-								  (long)ssnd[1]*(long)soef[1]+
-								  (long)ssnd[2]*(long)soef[2]+
-								  (long)ssnd[3]*(long)soef[3],ivolsc>>15);
-		ivolsc += ivolsci; ispos += isinc; lptr += 2; nsamp--;
-	} while (nsamp);
-#else
-
-		//c = &coef[l];
-		//h = &ssnd[u>>LSAMPREC]
-		// c[3]  c[2]  c[1]  c[0]
-		//*h[3] *h[2] *h[1] *h[0]
-		//+p[3] +p[2] +p[1] +p[0] = s1
-	if (cputype&(1<<23)) //MMX
-	{
-		_asm
-		{
-			push ebx
-			push esi
-			push edi
-			push ebp
-			mov esi, ispos
-			mov edi, lptr
-			mov ecx, nsamp
-			lea edi, [edi+ecx*8]
-			neg ecx
-			mov edx, dasnd
-			mov ebx, isinc
-			movd mm2, ivolsc
-			movd mm3, ivolsci
-
-			test cputype, 1 shl 22
-			mov ebp, coefilt
-			jnz short srndmmp
-
-			mov eax, 0xffff0000
-			movd mm7, eax
- srndmmx:mov eax, esi       ;MMX loop begins here
-			shr esi, LSAMPREC
-			movq mm0, [edx+esi*2]
-			lea esi, [eax+ebx]
-			and eax, (1<<LSAMPREC)-1
-			shr eax, LSAMPREC-LOGCOEFPREC
-			pmaddwd mm0, [ebp+eax*8]
-			movd mm5, [edi+ecx*8]
-			movq mm1, mm0
-			punpckhdq mm0, mm0
-			paddd mm0, mm1
-			movq mm4, mm2
-			pand mm4, mm7  ;mm4: 0 0 (ivolsc&0xff00) 0
-			pmaddwd mm0, mm4
-			paddd mm2, mm3
-			psrad mm0, 15
-			paddd mm5, mm0
-			movd [edi+ecx*8], mm5
-			add ecx, 1
-			jnz short srndmmx
-			jmp short srend
-
- srndmmp:mov eax, esi       ;MMX+ loop begins here
-			shr esi, LSAMPREC
-			movq mm0, [edx+esi*2]
-			lea esi, [eax+ebx]
-			and eax, (1<<LSAMPREC)-1
-			shr eax, LSAMPREC-LOGCOEFPREC
-			pmaddwd mm0, [ebp+eax*8]
-			movd mm5, [edi+ecx*8]
-			pshufw mm1, mm0, 0xe
-			paddd mm0, mm1
-			pshufw mm4, mm2, 0xe6  ;mm4: 0 0 (ivolsc&0xff00) 0
-			pmaddwd mm0, mm4
-			paddd mm2, mm3
-			psrad mm0, 15
-			paddd mm5, mm0
-			movd [edi+ecx*8], mm5
-			add ecx, 1
-			jnz short srndmmp
-srend:
-			pop ebp
-			pop edi
-			pop esi
-			pop ebx
-		}
-	}
-#endif
-#endif
-}
-
-static void rendersampsloop (long dasnd, long ispos, long isinc, long ivolsc, long ivolsci, long *lptr, long nsamp, short *coefilt)
-{
-	long i, k, numsamps, repstart;
-
-	i = isinc*nsamp + ispos; if (i < isinc) return; //ispos <  0 for all samples!
-		//Clip off low ispos
-	if (ispos < 0) { k = (isinc-1-ispos)/isinc; ivolsc += ivolsci*k; ispos += isinc*k; lptr += k*2; nsamp -= k; }
-	numsamps = *(long *)(dasnd-8);
-	repstart = *(long *)(dasnd-12);
-
-		//Make sure loop transition is smooth when using (NUMCOEF > 1)
-	*(long *)(dasnd+(numsamps<<1)  ) = *(long *)(dasnd+(repstart<<1)  );
-	*(long *)(dasnd+(numsamps<<1)+4) = *(long *)(dasnd+(repstart<<1)+4);
-
-	while (i-isinc >= (numsamps<<LSAMPREC))
-	{
-		k = ((numsamps<<LSAMPREC)-ispos+isinc-1)/isinc;
-		rendersamps(dasnd,ispos,isinc,ivolsc,ivolsci,lptr,k,coefilt);
-		ivolsc += ivolsci*k; ispos += isinc*k; lptr += k*2; nsamp -= k;
-		ispos -= ((numsamps-repstart)<<LSAMPREC); //adjust ispos so last sample equivalent to repstart
-		i = isinc*nsamp + ispos;
-	}
-	rendersamps(dasnd,ispos,isinc,ivolsc,ivolsci,lptr,nsamp,coefilt);
-
-		//Restore loop transition to silence (in case sound is also played without looping)
-	*(long *)(dasnd+(numsamps<<1)  ) = 0;
-	*(long *)(dasnd+(numsamps<<1)+4) = 0;
-}
-
-	//  lptr: 32-bit sound pointer
-	//  dptr: 16-bit destination pointer
-	// nsamp: number of destination samples to render
-static void audclipcopy (long *lptr, short *dptr, long nsamp)
-{
-	if (cputype&(1<<23)) //MMX
-	{
-#if 0
-		_asm
-		{
-			mov eax, lptr
-			mov edx, dptr
-			mov ecx, nsamp
-			lea edx, [edx+ecx*4]
-			lea eax, [eax+ecx*8]
-			neg ecx
-  begc0: movq mm0, [eax+ecx*8]
-			packssdw mm0, mm0
-			movd [edx+ecx*4], mm0
-			add ecx, 1
-			jnz short begc0
-		}
-#else
-		_asm //Same as above, but does 8-byte aligned writes instead of 4
-		{
-			mov eax, lptr
-			mov edx, dptr
-			mov ecx, nsamp
-			test edx, 4
-			lea edx, [edx+ecx*4]
-			lea eax, [eax+ecx*8]
-			jz short skipc
-			neg ecx
-			movq mm0, [eax+ecx*8]
-			packssdw mm0, mm0
-			movd [edx+ecx*4], mm0
-			add ecx, 2
-			jg short endc
-			jz short skipd
-			jmp short begc1
-	skipc:neg ecx
-			add ecx, 1
-	begc1:movq mm0, [eax+ecx*8-8]
-			packssdw mm0, [eax+ecx*8]
-			movq [edx+ecx*4-4], mm0
-			add ecx, 2
-			jl short begc1
-			jg short endc
-	skipd:movq mm0, [eax-8]
-			packssdw mm0, mm0
-			movd [edx-4], mm0
-	endc:
-		}
-#endif
-	}
-}
-
-void setears3d (float iposx, float iposy, float iposz,
-					 float iforx, float ifory, float iforz,
-					 float iheix, float iheiy, float iheiz)
-{
-	ENTERMUTX;
-	float f = 1.f/sqrt(iheix*iheix+iheiy*iheiy+iheiz*iheiz); //Make audiostr same magnitude as audiofor
-	audiopos.x = iposx; audiopos.y = iposy; audiopos.z = iposz;
-	audiofor.x = iforx; audiofor.y = ifory; audiofor.z = iforz;
-	audiohei.x = iheix; audiohei.y = iheiy; audiohei.z = iheiz;
-	audiostr.x = (iheiy*iforz - iheiz*ifory)*f;
-	audiostr.y = (iheiz*iforx - iheix*iforz)*f;
-	audiostr.z = (iheix*ifory - iheiy*iforx)*f;
-	LEAVEMUTX;
-}
-
-	//Because of 3D position calculations, it is better to render sound in sync with the movement
-	//   and not at random times. In other words, call kensoundbreath with lower "minleng" values
-	//   when calling from breath() than from other places, such as kensoundthread()
-static void kensoundbreath (long minleng)
-{
-	void *w[2];
-	unsigned long l[2], playcurs, writcurs, leng, u;
-	long i, j, k, m, n, *lptr[2], nsinc0, nsinc1, volsci0, volsci1;
-
-	if (!streambuf) return;
-	streambuf->GetStatus(&u); if (!(u&DSBSTATUS_LOOPING)) return;
-	if (streambuf->GetCurrentPosition(&playcurs,&writcurs) != DS_OK) return;
-	leng = ((playcurs-oplaycurs)&(SNDSTREAMSIZ-1)); if (leng < minleng) return;
-	i = (oplaycurs&(SNDSTREAMSIZ-1));
-	if (i < ((playcurs-1)&(SNDSTREAMSIZ-1)))
-		memset(&lsnd[i>>1],0,leng<<1);
-	else
-	{
-		memset(&lsnd[i>>1],0,((-oplaycurs)&(SNDSTREAMSIZ-1))<<1);
-		memset(lsnd,0,(playcurs&(SNDSTREAMSIZ-1))<<1);
-	}
-
-	if (!numrendersnd)
-	{
-		streambuf->Lock(i,leng,&w[0],&l[0],&w[1],&l[1],0);
-		if (w[0]) memset(w[0],(bytespersample-2)&128,l[0]);
-		if (w[1]) memset(w[1],(bytespersample-2)&128,l[1]);
-		streambuf->Unlock(w[0],l[0],w[1],l[1]);
-	}
-	else
-	{
-		streambuf->Lock(i,leng,&w[0],&l[0],&w[1],&l[1],0);
-
-		lptr[0] = &lsnd[i>>1]; lptr[1] = lsnd;
-		for(j=numrendersnd-1;j>=0;j--)
-		{
-			if (rendersnd[j].flags&KSND_MOVE) rendersnd[j].p = *rendersnd[j].ptr; //Get new 3D position
-			if (rendersnd[j].flags&KSND_3D)
-			{
-				n = (signed long)(leng>>gshiftval);
-
-				float f, g, h;
-				f = (rendersnd[j].p.x-audiopos.x)*(rendersnd[j].p.x-audiopos.x)+(rendersnd[j].p.y-audiopos.y)*(rendersnd[j].p.y-audiopos.y)+(rendersnd[j].p.z-audiopos.z)*(rendersnd[j].p.z-audiopos.z);
-				g = (rendersnd[j].p.x-audiopos.x)*audiostr.x+(rendersnd[j].p.y-audiopos.y)*audiostr.y+(rendersnd[j].p.z-audiopos.z)*audiostr.z;
-				if (f <= SNDMINDIST*SNDMINDIST) { f = SNDMINDIST; h = (float)rendersnd[j].ivolsc; } else { f = sqrt(f); h = ((float)rendersnd[j].ivolsc)*SNDMINDIST/f; }
-				g /= f;  //g=-1:pure left, g=0:center, g=1:pure right
-					//Should use exponential scaling to keep volume constant!
-				volsci0 = (long)((1.f-max(g*VOLSEPARATION,0))*h);
-				volsci1 = (long)((1.f+min(g*VOLSEPARATION,0))*h);
-				volsci0 = (volsci0-rendersnd[j].ivolsc0)/n;
-				volsci1 = (volsci1-rendersnd[j].ivolsc1)/n;
-
-					//ispos? = ispos + (f voxels)*(.00025sec/voxel) * (isinc*samplerate subsamples/sec);
-				m = rendersnd[j].isinc*samplerate;
-				k = rendersnd[j].isinc*n + rendersnd[j].ispos;
-				h = max((f-SNDMINDIST)+g*(EARSEPARATION*.5f),0); nsinc0 = k - mulshr16((long)(h*(65536.f/SNDSPEED)),m);
-				h = max((f-SNDMINDIST)-g*(EARSEPARATION*.5f),0); nsinc1 = k - mulshr16((long)(h*(65536.f/SNDSPEED)),m);
-				nsinc0 = (nsinc0-rendersnd[j].ispos0)/n;
-				nsinc1 = (nsinc1-rendersnd[j].ispos1)/n;
-			}
-			else
-			{
-				nsinc0 = rendersnd[j].isinc;
-				nsinc1 = rendersnd[j].isinc;
-				volsci0 = 0;
-				volsci1 = 0;
-			}
-			if (rendersnd[j].flags&KSND_LOOPFADE)
-			{
-				n = -(signed long)(leng>>gshiftval);
-				volsci0 = rendersnd[j].ivolsc0/n;
-				volsci1 = rendersnd[j].ivolsc1/n;
-			}
-			for(m=0;m<2;m++)
-				if (w[m])
-				{
-					k = (l[m]>>gshiftval);
-					if (!(rendersnd[j].flags&KSND_LOOP))
-					{
-						rendersamps(rendersnd[j].ssnd,rendersnd[j].ispos0,nsinc0,rendersnd[j].ivolsc0,volsci0,lptr[m]  ,k,rendersnd[j].coefilt);
-						rendersamps(rendersnd[j].ssnd,rendersnd[j].ispos1,nsinc1,rendersnd[j].ivolsc1,volsci1,lptr[m]+1,k,rendersnd[j].coefilt);
-						rendersnd[j].ispos += rendersnd[j].isinc*k;
-						rendersnd[j].ispos0 += nsinc0*k; rendersnd[j].ivolsc0 += volsci0*k;
-						rendersnd[j].ispos1 += nsinc1*k; rendersnd[j].ivolsc1 += volsci1*k;
-
-							//Delete sound only when both L&R channels have played through all their samples
-						if (((rendersnd[j].ispos0>>LSAMPREC) >= (*(long *)(rendersnd[j].ssnd-8))) &&
-							 ((rendersnd[j].ispos1>>LSAMPREC) >= (*(long *)(rendersnd[j].ssnd-8))))
-						{
-							(*(long *)(rendersnd[j].ssnd-16))--; numrendersnd--;
-							if (j != numrendersnd) rendersnd[j] = rendersnd[numrendersnd];
-							break;
-						}
-					}
-					else
-					{
-						long numsamps, repleng;
-						numsamps = ((*(long *)(rendersnd[j].ssnd-8))<<LSAMPREC);
-						repleng = numsamps-((*(long *)(rendersnd[j].ssnd-12))<<LSAMPREC);
-
-						for(n=rendersnd[j].ispos0;n>=numsamps;n-=repleng);
-						rendersampsloop(rendersnd[j].ssnd,n,nsinc0,rendersnd[j].ivolsc0,volsci0,lptr[m]  ,k,rendersnd[j].coefilt);
-						for(n=rendersnd[j].ispos1;n>=numsamps;n-=repleng);
-						rendersampsloop(rendersnd[j].ssnd,n,nsinc1,rendersnd[j].ivolsc1,volsci1,lptr[m]+1,k,rendersnd[j].coefilt);
-						rendersnd[j].ispos += rendersnd[j].isinc*k;
-						rendersnd[j].ispos0 += nsinc0*k;
-						rendersnd[j].ispos1 += nsinc1*k;
-						rendersnd[j].ivolsc0 += volsci0*k;
-						rendersnd[j].ivolsc1 += volsci1*k;
-
-							//Hack to keep sample pointers away from the limit...
-						while ((rendersnd[j].ispos0 >= numsamps) && (rendersnd[j].ispos1 >= numsamps))
-						{
-							rendersnd[j].ispos -= repleng;
-							rendersnd[j].ispos0 -= repleng; rendersnd[j].ispos1 -= repleng;
-						}
-					}
-				}
-			if ((m >= 2) && (rendersnd[j].flags&KSND_LOOPFADE)) //Remove looping sound after fade-out
-			{
-				(*(long *)(rendersnd[j].ssnd-16))--; numrendersnd--;
-				if (j != numrendersnd) rendersnd[j] = rendersnd[numrendersnd];
-			}
-			if (cputype&(1<<23)) _asm emms //MMX
-		}
-		for(m=0;m<2;m++) if (w[m]) audclipcopy(lptr[m],(short *)w[m],l[m]>>gshiftval);
-		if (cputype&(1<<23)) _asm emms //MMX
-		streambuf->Unlock(w[0],l[0],w[1],l[1]);
-	}
-
-	oplaycurs = playcurs;
 }
 
 #if (USETHREADS != 0)
@@ -3466,306 +2749,7 @@ static void kensoundthread (void *_)
 	quitprogram = 2;
 }
 #endif
-
-	//Returns pointer to sound data; loads file if not already loaded.
-long audgetfilebufptr (const char *filnam)
-{
-	WAVEFORMATEX wft;
-	long i, j, leng, hashind, newsnd, *lptr, repstart;
-	char tempbuf[12], *fptr;
-#ifndef USEKZ
-	FILE *fil;
 #endif
-
-	if (audhashbuf)
-	{
-		for(i=audhashead[audcalchash(filnam)];i>=0;i=(*(long *)&audhashbuf[i]))
-			if (!filnamcmp(filnam,&audhashbuf[i+12])) return(*(long *)&audhashbuf[i+8]);
-	}
-
-		//Load WAV file here!
-	repstart = 0x80000000;
-	if (filnam[0] == '<') //Sound is in memory! (KSND_MEM flag)
-	{
-		unsigned long u; //Filename is in weird hex format
-		for(i=1,u=0;i<9;i++) u = (u<<4)+(filnam[i]&15);
-		fptr = (char *)u;
-
-		memcpy(tempbuf,fptr,12); fptr += 12;
-		if (*(long *)&tempbuf[0] != 0x46464952) return(0); //RIFF
-		if (*(long *)&tempbuf[8] != 0x45564157) return(0); //WAVE
-		for(j=16;j;j--)
-		{
-			memcpy(tempbuf,fptr,8); fptr += 8; i = *(long *)&tempbuf[0]; leng = *(long *)&tempbuf[4];
-			if (i == 0x61746164) break; //data
-			if (i == 0x20746d66) //fmt
-			{
-				memcpy(&wft,fptr,16); fptr += 16;
-				if ((wft.wFormatTag != WAVE_FORMAT_PCM) || (wft.nChannels != 1)) return(0);
-				if (leng == 20) { memcpy(&repstart,fptr,4); fptr += 4; }
-				else if (leng > 16) fptr += ((leng-16+1)&~1);
-				continue;
-			}
-			fptr += ((leng+1)&~1);
-			//if (fptr > ?eof?) return(0); //corrupt WAV files in memory aren't detected :/
-		}
-		if ((!j) || (!leng)) return(0);
-	}
-	else
-	{
-#ifndef USEKZ
-		if (!(fil = fopen(filnam,"rb"))) return(0);
-		fread(tempbuf,12,1,fil);
-		if (*(long *)&tempbuf[0] != 0x46464952) { fclose(fil); return(0); } //RIFF
-		if (*(long *)&tempbuf[8] != 0x45564157) { fclose(fil); return(0); } //WAVE
-		for(j=16;j;j--)
-		{
-			fread(&tempbuf,8,1,fil); i = *(long *)&tempbuf[0]; leng = *(long *)&tempbuf[4];
-			if (i == 0x61746164) break; //data
-			if (i == 0x20746d66) //fmt
-			{
-				fread(&wft,16,1,fil);
-				if ((wft.wFormatTag != WAVE_FORMAT_PCM) || (wft.nChannels != 1)) { fclose(fil); return(0); }
-				if (leng == 20) fread(&repstart,4,1,fil);
-				else if (leng > 16) fseek(fil,(leng-16+1)&~1,SEEK_CUR);
-				continue;
-			}
-			fseek(fil,(leng+1)&~1,SEEK_CUR);
-			if (feof(fil)) { fclose(fil); return(0); }
-		}
-		if ((!j) || (!leng)) { fclose(fil); return(0); }
-#else
-		if (!kzopen(filnam)) return(0);
-		kzread(tempbuf,12);
-		if (*(long *)&tempbuf[0] != 0x46464952) { kzclose(); return(0); } //RIFF
-		if (*(long *)&tempbuf[8] != 0x45564157) { kzclose(); return(0); } //WAVE
-		for(j=16;j;j--)
-		{
-			kzread(tempbuf,8); i = *(long *)&tempbuf[0]; leng = *(long *)&tempbuf[4];
-			if (i == 0x61746164) break; //data
-			if (i == 0x20746d66) //fmt
-			{
-				kzread(&wft,16);
-				if ((wft.wFormatTag != WAVE_FORMAT_PCM) || (wft.nChannels != 1)) { kzclose(); return(0); }
-				if (leng == 20) kzread(&repstart,4);
-				else if (leng > 16) kzseek((leng-16+1)&~1,SEEK_CUR);
-				continue;
-			}
-			kzseek((leng+1)&~1,SEEK_CUR);
-			if (kzeof()) { kzclose(); return(0); }
-		}
-		if ((!j) || (!leng)) { kzclose(); return(0); }
-#endif
-	}
-
-	if (wft.wBitsPerSample == 16) i = leng; else i = (leng<<1); //Convert 8-bit to 16-bit
-
-	if (filnam[0] == '<') //Sound is in memory! (KSND_MEM flag)
-	{
-		if (!(newsnd = (long)malloc(16+i+8))) return(0);
-		memcpy((void *)(newsnd+16),fptr,leng);
-	}
-	else
-	{
-#ifndef USEKZ
-		if (!(newsnd = (long)malloc(16+i+8))) { fclose(fil); return(0); }
-		fread((void *)(newsnd+16),leng,1,fil);
-		fclose(fil);
-#else
-		if (!(newsnd = (long)malloc(16+i+8))) { kzclose(); return(0); }
-		kzread((void *)(newsnd+16),leng);
-		kzclose();
-#endif
-	}
-
-	if (wft.wBitsPerSample == 8) //Convert 8-bit to 16-bit
-	{
-		j = newsnd+16;
-		for(i=leng-1;i>=0;i--) (*(short *)((i<<1)+j)) = (((short)((*(signed char *)(i+j))-128))<<8);
-		wft.wBitsPerSample = 16; leng <<= 1;
-	}
-	*(long *)(newsnd) = 0; //Allocation count
-	*(long *)(newsnd+4) = repstart; //Loop repeat start sample
-	*(long *)(newsnd+8) = (leng>>1); // /((wft.wBitsPerSample>>3)*wft.nChannels); //numsamples
-	*(float *)(newsnd+12) = (float)(wft.nSamplesPerSec<<LSAMPREC);
-	*(long *)(newsnd+leng+16) = *(long *)(newsnd+leng+20) = 0;
-
-		//Write new file info to hash
-	j = 12+strlen(filnam)+1; if (!audcheckhashsiz(j)) return(0);
-	hashind = audcalchash(filnam);
-	*(long *)&audhashbuf[audhashpos] = audhashead[hashind];
-	*(long *)&audhashbuf[audhashpos+4] = audlastloadedwav;
-	*(long *)&audhashbuf[audhashpos+8] = newsnd;
-	strcpy(&audhashbuf[audhashpos+12],filnam);
-	audhashead[hashind] = audhashpos; audlastloadedwav = audhashpos; audhashpos += j;
-
-	return(newsnd);
-}
-
-	// filnam: ASCIIZ string of filename (can be inside .ZIP file if USEKZ is enabled)
-	//         Filenames are compared with a hash, and samples are cached, so don't worry about speed!
-	//volperc: volume scale (0 is silence, 100 is max volume)
-	// frqmul: frequency multiplier (1.0 is no scale)
-	//    pos: if 0, then doesn't use 3D, if nonzero, this is pointer to 3D position
-	//  flags: bit 0: 1=3D sound, 0=simple sound
-	//         bit 1: 1=dynamic 3D position update (from given pointer), 0=disable (ignored if !pos)
-	//         bit 2: 1=loop sound (use playsoundupdate to disable, for non 3D sounds use dummy point3d!)
-	//            Valid values for flags:
-	//            flags=0: 0           flags=4: KSND_LOOP
-	//            flags=1: KSND_3D     flags=5: KSND_LOOP|KSND_3D
-	//            flags=3: KSND_MOVE   flags=7: KSND_LOOP|KSND_MOVE
-	//
-	//         NOTE: When using flags=4 (KSND_LOOP without KSND_3D or KSND_MOVE), you can pass a unique
-	//               non-zero dummy pointer pos to playsound. This way, you can use playsoundupdate() to stop
-	//               the individual sound. If you pass a NULL pointer, then only way to stop the sound is
-	//               by stopping all sounds.
-void playsound (const char *filnam, long volperc, float frqmul, void *pos, long flags)
-{
-	void *w[2];
-	unsigned long l[2], playcurs, writcurs, u;
-	long i, j, k, m, ispos, ispos0, ispos1, isinc, ivolsc, ivolsc0, ivolsc1, newsnd, *lptr[2], numsamps;
-	short *coefilt;
-	float f, g, h;
-	
-	if (!dsound) return;
-	ENTERMUTX;
-	if (!streambuf) { LEAVEMUTX; return; }
-	streambuf->GetStatus(&u); if (!(u&DSBSTATUS_LOOPING)) { LEAVEMUTX; return; }
-
-	if (flags&KSND_MEM)
-	{
-		char tempbuf[10]; //Convert to ASCII string so filnamcmp()&audcalchash() works right
-		tempbuf[9] = 0; u = (unsigned long)filnam;
-		for(i=8;i>0;i--) { tempbuf[i] = (u&15)+64; u >>= 4; }
-		tempbuf[0] = '<'; //This invalid filename char tells audgetfilebufptr it's KSND_MEM
-		if (!(newsnd = audgetfilebufptr(tempbuf))) { LEAVEMUTX; return; }
-	}
-	else
-	{
-		if (!(newsnd = audgetfilebufptr(filnam))) { LEAVEMUTX; return; }
-	}
-	newsnd += 16;
-
-	ispos = 0; isinc = (long)((*(float *)(newsnd-4))*frqmul*rsamplerate);
-	ivolsc = (volperc<<15)/100; if (ivolsc >= 32768) ivolsc = 32767; ivolsc <<= 16;
-
-	if (!pos) flags &= ~(KSND_3D|KSND_MOVE); //null pointers not allowed for 3D sound
-	if (flags&KSND_MOVE) flags |= KSND_3D; //moving sound must be 3D sound
-	if ((flags&KSND_LOOP) && ((*(long *)(newsnd-12)) == 0x80000000))
-		flags &= ~KSND_LOOP; //WAV must support looping to allow looping
-
-	if (!(flags&KSND_LOPASS)) coefilt = coef; else coefilt = coeflopass;
-
-	if (flags&KSND_3D)
-	{
-		f = (((point3d *)pos)->x-audiopos.x)*(((point3d *)pos)->x-audiopos.x)+(((point3d *)pos)->y-audiopos.y)*(((point3d *)pos)->y-audiopos.y)+(((point3d *)pos)->z-audiopos.z)*(((point3d *)pos)->z-audiopos.z);
-		g = (((point3d *)pos)->x-audiopos.x)*audiostr.x+(((point3d *)pos)->y-audiopos.y)*audiostr.y+(((point3d *)pos)->z-audiopos.z)*audiostr.z;
-		if (f <= SNDMINDIST*SNDMINDIST) { f = SNDMINDIST; h = (float)ivolsc; } else { f = sqrt(f); h = ((float)ivolsc)*SNDMINDIST/f; }
-		g /= f;  //g=-1:pure left, g=0:center, g=1:pure right
-			//Should use exponential scaling to keep volume constant!
-		ivolsc0 = (long)((1.f-max(g*VOLSEPARATION,0))*h);
-		ivolsc1 = (long)((1.f+min(g*VOLSEPARATION,0))*h);
-			//ispos? = ispos + (f voxels)*(.00025sec/voxel) * (isinc*samplerate subsamples/sec);
-		m = isinc*samplerate;
-		h = max((f-SNDMINDIST)+g*(EARSEPARATION*.5f),0); ispos0 = -mulshr16((long)(h*(65536.f/SNDSPEED)),m);
-		h = max((f-SNDMINDIST)-g*(EARSEPARATION*.5f),0); ispos1 = -mulshr16((long)(h*(65536.f/SNDSPEED)),m);
-	}
-	else { ispos0 = ispos1 = 0; ivolsc0 = ivolsc1 = ivolsc; }
-
-	kensoundbreath(SNDSTREAMSIZ>>1); //Not necessary, but for good luck
-	if (streambuf->GetCurrentPosition(&playcurs,&writcurs) != DS_OK) { LEAVEMUTX; return; }
-		//If you use playcurs instead of writcurs, beginning of sound gets cut off :/
-		//on WinXP: ((writcurs-playcurs)&(SNDSTREAMSIZ-1)) ranges from 6880 to 8820 (step 4)
-	i = (writcurs&(SNDSTREAMSIZ-1));
-	if (streambuf->Lock(i,(oplaycurs-i)&(SNDSTREAMSIZ-1),&w[0],&l[0],&w[1],&l[1],0) != DS_OK) { LEAVEMUTX; return; }
-	lptr[0] = &lsnd[i>>1]; lptr[1] = lsnd;
-	for(m=0;m<2;m++)
-		if (w[m])
-		{
-			j = (l[m]>>gshiftval);
-			if (!(flags&KSND_LOOP))
-			{
-				rendersamps(newsnd,ispos0,isinc,ivolsc0,0,lptr[m]  ,j,coefilt);
-				rendersamps(newsnd,ispos1,isinc,ivolsc1,0,lptr[m]+1,j,coefilt);
-				j *= isinc; ispos += j; ispos0 += j; ispos1 += j;
-			}
-			else
-			{
-				long numsamps, repleng, n;
-				numsamps = ((*(long *)(newsnd-8))<<LSAMPREC);
-				repleng = numsamps-((*(long *)(newsnd-12))<<LSAMPREC);
-
-				for(n=ispos0;n>=numsamps;n-=repleng);
-				rendersampsloop(newsnd,n,isinc,ivolsc0,0,lptr[m]  ,j,coefilt);
-				for(n=ispos1;n>=numsamps;n-=repleng);
-				rendersampsloop(newsnd,n,isinc,ivolsc1,0,lptr[m]+1,j,coefilt);
-				j *= isinc; ispos += j; ispos0 += j; ispos1 += j;
-
-					//Hack to keep sample pointers away from the limit...
-				while ((ispos0 >= numsamps) && (ispos1 >= numsamps))
-					{ ispos -= repleng; ispos0 -= repleng; ispos1 -= repleng; }
-			}
-		}
-	for(m=0;m<2;m++) if (w[m]) audclipcopy(lptr[m],(short *)w[m],l[m]>>gshiftval);
-	if (cputype&(1<<23)) _asm emms //MMX
-	streambuf->Unlock(w[0],l[0],w[1],l[1]);
-
-		//Save params to continue playing later (when both L&R channels haven't played through)
-	numsamps = *(long *)(newsnd-8);
-	if ((((ispos0>>LSAMPREC) < numsamps) || ((ispos1>>LSAMPREC) < numsamps) || (flags&KSND_LOOP)) && (numrendersnd < MAXPLAYINGSNDS))
-	{
-		rendersnd[numrendersnd].ptr = (point3d *)pos;
-		if (flags&KSND_3D) rendersnd[numrendersnd].p = *((point3d *)pos);
-		else { rendersnd[numrendersnd].p.x = rendersnd[numrendersnd].p.y = rendersnd[numrendersnd].p.z = 0; }
-		rendersnd[numrendersnd].flags = flags;
-		rendersnd[numrendersnd].ssnd = newsnd;
-		rendersnd[numrendersnd].ispos = ispos;
-		rendersnd[numrendersnd].ispos0 = ispos0;
-		rendersnd[numrendersnd].ispos1 = ispos1;
-		rendersnd[numrendersnd].isinc = isinc;
-		rendersnd[numrendersnd].ivolsc = ivolsc;
-		rendersnd[numrendersnd].ivolsc0 = ivolsc0;
-		rendersnd[numrendersnd].ivolsc1 = ivolsc1;
-		rendersnd[numrendersnd].coefilt = coefilt;
-		numrendersnd++;
-		(*(long *)(newsnd-16))++;
-	}
-
-	LEAVEMUTX;
-}
-
-	//Use this function to update a pointer location (if you need to move things around in memory)
-	//special cases: if (optr== 0) changes all pointers
-	//               if (nptr== 0) changes KSND_MOVE to KSND_3D
-	//               if (nptr==-1) changes KSND_MOVE to KSND_3D and stops sound (using KSND_LOOPFADE)
-	//examples: playsoundupdate(&spr[delete_me].p,&spr[--numspr].p); //update pointer location
-	//          playsoundupdate(&spr[just_before_respawn],0);        //stop position updates from pointer
-	//          playsoundupdate(&my_looping_sound,(point3d *)-1);    //turn off a looping sound
-	//          playsoundupdate(0,0);                                //stop all position updates
-	//          playsoundupdate(0,(point3d *)-1);                    //turn off all sounds
-void playsoundupdate (void *optr, void *nptr)
-{
-	long i;
-
-	if (!dsound) return;
-	ENTERMUTX;
-	for(i=numrendersnd-1;i>=0;i--)
-	{
-		if ((rendersnd[i].ptr != (point3d *)optr) && (optr)) continue;
-		if (((long)nptr) == -2) { rendersnd[i].flags |= KSND_LOPASS; rendersnd[i].coefilt = coeflopass; continue; }
-		if (((long)nptr) == -3) { rendersnd[i].flags &= ~KSND_LOPASS; rendersnd[i].coefilt = coef; continue; }
-		rendersnd[i].ptr = (point3d *)nptr;
-		if (!((((long)nptr)+1)&~1))
-		{
-			rendersnd[i].flags &= ~KSND_MOVE;              //nptr == {0,-1}
-			if (nptr) rendersnd[i].flags |= KSND_LOOPFADE; //nptr == {-1}
-		}
-	}
-	LEAVEMUTX;
-}
-
-#endif
-// Kensound code ends ---------------------------------------------------------
 
 // DirectSound variables & code ----------------------------------------------
 
@@ -3781,6 +2765,8 @@ LPDIRECTSOUND3DBUFFER ds3dbuf[MAXSOUNDS];
 LPDIRECTSOUND3DLISTENER ds3dlis = 0;
 static long sndindex = -1;
 #endif
+
+
 static long globvolume = 100;
 
 	//0=-10000,1-100=CINT(log10(z/100)*1000)
@@ -3808,7 +2794,7 @@ void setvolume (long percentmax)
 
 void uninitdirectsound ()
 {
-	long i;
+
 
 	if (!dsound) return;
 #if (USEKENSOUND == 1)
@@ -3816,6 +2802,7 @@ void uninitdirectsound ()
 #endif
 
 #if (USEKENSOUND == 2)
+	long i;
 	for(i=MAXSOUNDS-1;i>=0;i--)
 		if (ds3dbuf[i]) { ds3dbuf[i]->Release(); ds3dbuf[i] = 0; }
 	if (ds3dlis) { ds3dlis->Release(); ds3dlis = 0; }
@@ -3828,11 +2815,12 @@ void uninitdirectsound ()
 void initdirectsound ()
 {
 	DSBUFFERDESC dsbdesc;
-	long i;
+
 
 	if (dsound) uninitdirectsound();
 
 #if (USEKENSOUND == 2)
+	long i;
 	for(i=0;i<MAXSOUNDS;i++) { dsbuf[i] = 0; ds3dbuf[i] = 0; }
 #endif
 
@@ -3847,7 +2835,7 @@ void initdirectsound ()
 			//(dsound)->Release(lpds);
 			if (dsrval != S_OK) { dsound = NULL; return; }
 		}
-	}   
+	}
 #else
 	if (DirectSoundCreate(0,&dsound,0) != DS_OK) { MessageBox(ghwnd,"DirectSoundCreate","ERROR",MB_OK); exit(0); }
 #endif
@@ -3890,7 +2878,7 @@ void initdirectsound ()
 	kensoundinit(dsound,44100,2,2); //last line
 #endif
 }
-
+/*
 #if (USEKENSOUND == 2)
 
 #define MINSNDLENG 4096 //is 1764 min size? too bad it fails sometimes :/ 1764*25 = 44100
@@ -4090,9 +3078,9 @@ void playsoundupdate (void *oposptr, void *nposptr)
 {
 	//if (!nptr) follow = 0
 }
+*/
+#endif
 
-#endif
-#endif
 
 //Quitting routines ----------------------------------------------------------
 
@@ -4142,9 +3130,12 @@ void setacquire (long mouse, long kbd)
 		kbd_acquire = kbd;
 	}
 }
+
 void setmouseout (void (*in)(long,long), long x, long y)
 {
+
 	if (fullscreen) return;
+
 	setmousein = in;
 	setacquire(0, kbd_acquire);
 
@@ -4201,7 +3192,8 @@ long CALLBACK WindowProc (HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	// mouse pos:
 	static long omx, omy;
 	long mx, my;
-
+	long shift1631 = (unsigned long)(1<<16)-(unsigned long)(1<<31);
+	long shift3116 = (unsigned long)(1<<31)-(unsigned long)(1<<16);
 	if (peekwindowproc) { mx = peekwindowproc(hwnd,msg,wParam,lParam); if (mx >= 0) return(mx); }
 	switch (msg)
 	{
@@ -4335,6 +3327,8 @@ long CALLBACK WindowProc (HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 #ifdef NOINPUT
 			keystatus[((lParam>>16)&127)+((lParam>>17)&128)] = 0;
 #endif
+
+
 		case WM_SYSKEYUP:
 			if ((wParam&0xff) == 0xff) break; //Fixes SHIFT+[ext key] on XP
 			switch (lParam&0x17f0000)
@@ -4355,7 +3349,7 @@ long CALLBACK WindowProc (HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			mx = (signed short)HIWORD(wParam);
 				  if (mx > 0) ext_mbstatus[6] = 2;
 			else if (mx < 0) ext_mbstatus[7] = 2;
-			ext_mwheel = min(max(ext_mwheel+mx,(1<<16)-(1<<31)),(1<<31)-(1<<16));
+			ext_mwheel = min(max(ext_mwheel+mx,shift1631),shift3116);
 			break;
 #ifndef NOINPUT
 		case WM_MOUSEMOVE:
@@ -4463,47 +3457,6 @@ void arg2filename (const char *oarg, const char *ext, char *narg)
 	if (!strstr(narg,ext)) strcat(narg,ext);
 }
 
-#ifdef __WATCOMC__
-
-	//Precision: bits 8-9:, Rounding: bits 10-11:
-	//00 = 24-bit    (0)   00 = nearest/even (0)
-	//01 = reserved  (1)   01 = -inf         (4)
-	//10 = 53-bit    (2)   10 = inf          (8)
-	//11 = 64-bit    (3)   11 = 0            (c)
-static long fpuasm[2];
-void fpuinit (long);
-#pragma aux fpuinit =\
-	"fninit"\
-	"fstcw fpuasm"\
-	"and byte ptr fpuasm[1], 0f0h"\
-	"or byte ptr fpuasm[1], al"\
-	"fldcw fpuasm"\
-	parm [eax]
-
-#endif
-#ifdef _MSC_VER
-
-	//Precision: bits 8-9:, Rounding: bits 10-11:
-	//00 = 24-bit    (0)   00 = nearest/even (0)
-	//01 = reserved  (1)   01 = -inf         (4)
-	//10 = 53-bit    (2)   10 = inf          (8)
-	//11 = 64-bit    (3)   11 = 0            (c)
-static long fpuasm[2];
-static _inline void fpuinit (long a)
-{
-	_asm
-	{
-		mov eax, a
-		fninit
-		fstcw fpuasm
-		and byte ptr fpuasm[1], 0f0h
-		or byte ptr fpuasm[1], al
-		fldcw fpuasm
-	}
-}
-
-#endif
-
 int WINAPI WinMain (HINSTANCE hinst, HINSTANCE hpinst, LPSTR cmdline, int ncmdshow)
 {
 	long i, j, k, inquote, argc;
@@ -4512,7 +3465,8 @@ int WINAPI WinMain (HINSTANCE hinst, HINSTANCE hpinst, LPSTR cmdline, int ncmdsh
 	ghinst = hinst; ghpinst = hpinst; gcmdline = cmdline; gncmdshow = ncmdshow;
 
 	cputype = getcputype();
-	if (cputype&((1<<0)+(1<<4)) != ((1<<0)+(1<<4)))
+	long cpu_type_mask = ((1<<0)+(1<<4));
+	if ( (cputype & cpu_type_mask ) != cpu_type_mask )
 		{ MessageBox(0,"Sorry, this program requires FPU&RDTSC support (>=Pentium)",prognam,MB_OK); return(-1); }
 	osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
 	GetVersionEx(&osvi);
