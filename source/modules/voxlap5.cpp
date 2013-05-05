@@ -1586,7 +1586,7 @@ inline void hrendz (long sx, long sy, long p1, long plc, long incr, long j)
 	castdat * c0;
 	p0 = ylookup[sy]+(sx<<2)+frameplace;
 	p1 = ylookup[sy]+(p1<<2)+frameplace;
-#if USEZBUFFER ==1
+
 	__m128 xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7;
 
 	// this big chunk of scalar code looks like it needs to be vectorized
@@ -1632,34 +1632,31 @@ inline void hrendz (long sx, long sy, long p1, long plc, long incr, long j)
 	xmm2 = _mm_add_ps( xmm2, xmm3 );
 	xmm2 = _mm_sub_ps( xmm2, xmm0 );
 	i = zbufoff;
-#endif
+
 	// --------------------------------------------------
 	// Check for pixel alignment of 4, and render blocks of pixels 
 	// based on that alignment.
 	// --------------------------------------------------
 	if ( ( *(long *)&p0 & 15 ) != 0 ) {
 		
-#if USEZBUFFER ==1
 		if ( ( *(long*)&p0 & 8 ) != 0 ) {
 			xmm0 = _mm_shuffle_ps( xmm0, xmm0, 0x4e  ); // rotate right by 2
 		}
 		if ( ( *(long*)&p0 & 4 ) != 0 ) {
 			xmm0 = _mm_shuffle_ps( xmm0, xmm0, 0x39  ); // rotate right by 1
 		}
-#endif
 
 		//;Do first 0-3 pixels to align unrolled loop of 4
 		do {
 			__m128i pixel = _mm_loadl_epi64( (const __m128i*)(&angstart[plc>>16][j]) );
 			*(int *)p0 = _mm_cvtsi128_si32(pixel);
-#if USEZBUFFER ==1
+
 			xmm3 = _mm_rsqrt_ss(xmm0);
 			pixel = _mm_shuffle_epi32(pixel, _MM_SHUFFLE(0,2,3,1) );
 			xmm7 = _mm_cvtepi32_ps( pixel );
 			xmm7 = _mm_mul_ss( xmm7, xmm3 );
 			xmm0 = _mm_shuffle_ps( xmm0, xmm0, 0x39  );
 			_mm_store_ss( (float*)(p0+i), xmm7 );
-#endif
 			plc += incr; p0 += 4;
 			if (p0 == p1) {	return;	}
 		} while ( ( *(long *)&p0 & 15 ) != 0 ); 
@@ -1691,7 +1688,7 @@ inline void hrendz (long sx, long sy, long p1, long plc, long incr, long j)
 
 			// Store color for 4 pixels
 			_mm_stream_si128( (__m128i*)(p0), _mm_unpacklo_epi32( comb1, comb2 ) );		
-#if USEZBUFFER ==1
+
 			__m128 zpixel = _mm_cvtepi32_ps( _mm_unpackhi_epi32( comb1, comb2 ) );
 			xmm3 = _mm_rsqrt_ps(xmm0); 
 			xmm0 = _mm_add_ps(xmm0, xmm2);        
@@ -1701,8 +1698,7 @@ inline void hrendz (long sx, long sy, long p1, long plc, long incr, long j)
 
 			// Store 4 zbuffer pixels
 			_mm_stream_ps( (float*)(p0+i), zpixel  );
-#endif
-			
+
 			p0+=16;// Move raster
 			plc+=incr*4;
 
@@ -1715,15 +1711,12 @@ inline void hrendz (long sx, long sy, long p1, long plc, long incr, long j)
 		c0 = &angstart[plc>>16][j];
 		__m128i castdat = _mm_loadl_epi64( (const __m128i*)(c0) );
 		*(int *)p0 = _mm_cvtsi128_si32(castdat);
-
-		#if USEZBUFFER ==1
 		xmm3 = _mm_rsqrt_ss(xmm0); 
 		castdat = _mm_shuffle_epi32(castdat, _MM_SHUFFLE(0,2,3,1) );
 		xmm7 = _mm_cvtepi32_ps( castdat );         
 		xmm7 = _mm_mul_ss( xmm7, xmm3 );              
 		xmm0 = _mm_shuffle_ps( xmm0, xmm0, 0x39  );   // rotate right by 1
 		_mm_store_ss( (float*)(p0+i), xmm7 );       
-		#endif
 	} 
 }
 
