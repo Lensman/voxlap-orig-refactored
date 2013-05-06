@@ -16,7 +16,7 @@
 //VOXLAP engine by Ken Silverman (http://advsys.net/ken)
 
 #define USE_INTRINSICS
-#define PREC (256*PREC_TABLE)
+#define PREC (1024*PREC_TABLE)
 #define CMPPREC (256*PREC_TABLE)
 #define FPREC (256*PREC_TABLE)
 #define USEV5ASM 1
@@ -155,13 +155,13 @@ extern __ALIGN(16) long xbsceil[], xbsflor[]; // was static now in kmodelling
 	//radar: 320x200 requires  419560*2 bytes (area * 6.56*2)
 	//radar: 400x300 requires  751836*2 bytes (area * 6.27*2)
 	//radar: 640x480 requires 1917568*2 bytes (area * 6.24*2)
-__ALIGN(16) long *radar = 0, *radarmem = 0;
+long __ALIGN(16) *radar = 0, *radarmem = 0;
 
 #if (USEZBUFFER == 1)
 static long *zbuffermem = 0, zbuffersiz = 0;
 #endif
 
-static __ALIGN(16) castdat *angstart[MAXXDIM*4], *gscanptr;
+static castdat __ALIGN(16) *angstart[MAXXDIM*4], *gscanptr;
 #define CMPRECIPSIZ (MAXXDIM)+32
 static float cmprecip[CMPRECIPSIZ], wx0, wy0, wx1, wy1;
 static long iwx0, iwy0, iwx1, iwy1;
@@ -1576,7 +1576,7 @@ inline float f_rsqrt( const float number )
         y  = * ( float * ) &i;
         y  = y * ( threehalfs - ( x2 * y * y ) );   // 1st iteration
         // 2nd iteration, this can be removed if you don't need accuracy
-      	//y  = y * ( threehalfs - ( x2 * y * y ) );   
+      	y  = y * ( threehalfs - ( x2 * y * y ) );   
         return y;
 }
 
@@ -1825,11 +1825,25 @@ inline void vrendz (long sx, long sy, long p1, long iplc, long iinc)
 	{
 
 		// This block should end up as movq's
+		__m128i sx_offsets = _mm_load_si128( (const __m128i *)&uurend[sx] );
+		/* sse4
+		int idx0 = _mm_extract_epi32( sx_offsets, 0 );
+		int idx1 = _mm_extract_epi32( sx_offsets, 2 );
+		int idx2 = _mm_extract_epi32( sx_offsets, 4 );
+		int idx3 = _mm_extract_epi32( sx_offsets, 6 );
+		
+		__m128i col0i = _mm_loadl_epi64( (const __m128i*)&angstart[idx0>>16][iplc] );
+		__m128i col1i = _mm_loadl_epi64( (const __m128i*)&angstart[idx1>>16][iplc+iinc] );
+		__m128i col2i = _mm_loadl_epi64( (const __m128i*)&angstart[idx2>>16][iplc+iinc*2] );						
+		__m128i col3i = _mm_loadl_epi64( (const __m128i*)&angstart[idx3>>16][iplc+iinc*3] );
+		*/
+		
 		__m128i col0i = _mm_loadl_epi64( (const __m128i*)&angstart[uurend[sx]>>16][iplc] );
 		__m128i col1i = _mm_loadl_epi64( (const __m128i*)&angstart[uurend[sx+1]>>16][iplc+iinc] );
 		__m128i col2i = _mm_loadl_epi64( (const __m128i*)&angstart[uurend[sx+2]>>16][iplc+iinc*2] );						
 		__m128i col3i = _mm_loadl_epi64( (const __m128i*)&angstart[uurend[sx+3]>>16][iplc+iinc*3] );
 		
+
 		// Combine 4 128bit registers into 2 128bit registers
 		__m128i comb1 = _mm_unpacklo_epi32( col0i, col1i );
 		__m128i comb2 = _mm_unpacklo_epi32( col2i, col3i );
@@ -1847,11 +1861,9 @@ inline void vrendz (long sx, long sy, long p1, long iplc, long iinc)
 
 		// Store 4 zbuffer pixels
 		_mm_stream_ps( (float*)(p0+i), zpixel  );
-		uurend[sx] += uurend[sx+MAXXDIM]; 
-		uurend[sx+1] += uurend[sx+1+MAXXDIM]; 
-		uurend[sx+2] += uurend[sx+2+MAXXDIM]; 
-		uurend[sx+3] += uurend[sx+3+MAXXDIM]; 
-		
+		__m128i sx_offsets_to_add = _mm_loadu_si128( (const __m128i *)&uurend[sx+MAXXDIM] );
+		sx_offsets = _mm_add_epi32(sx_offsets, sx_offsets_to_add );
+		_mm_store_si128 ( (__m128i *)&uurend[sx], sx_offsets);
 		iplc += iinc*4; p0 += 16; sx+=4;
 
 	} 
