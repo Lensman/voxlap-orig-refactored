@@ -1719,6 +1719,161 @@ inline void hrendz (long sx, long sy, long p1, long plc, long incr, long j)
 		_mm_store_ss( (float*)(p0+i), xmm7 );       
 	} 
 }
+/*
+void vrendz (long sx, long sy, long p1, long iplc, long iinc)
+{
+	float dirx, diry; long i, p0;
+	castdat * c0;
+	p0 = ylookup[sy]+(sx<<2)+frameplace;
+	p1 = ylookup[sy]+(p1<<2)+frameplace;
+	dirx = optistrx*(float)sx + optiheix*(float)sy + optiaddx;
+	diry = optistry*(float)sx + optiheiy*(float)sy + optiaddy;
+	i = zbufoff;
+	while (p0 < p1)
+	{
+		c0 = &angstart[uurend[sx]>>16][iplc];
+		*(long *)p0 = c0->col;
+		*(float *)(p0+i) = (float)c0->dist*f_rsqrt(dirx*dirx+diry*diry);
+		dirx += optistrx; diry += optistry; 
+		uurend[sx] += uurend[sx+MAXXDIM]; 
+		p0 += 4; iplc += iinc; sx++;
+	}
+}
+*/
+inline void vrendz (long sx, long sy, long p1, long iplc, long iinc)
+{
+	long p0, i; 
+	castdat * c0;
+	p0 = ylookup[sy]+(sx<<2)+frameplace;
+	p1 = ylookup[sy]+(p1<<2)+frameplace;
+
+	__m128 xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7;
+
+
+	xmm0 = _mm_cvtsi32_ss( xmm0, sx & 0xfffffffc );
+	xmm4 = _mm_cvtsi32_ss( xmm4, sy );
+
+
+	xmm1 = _mm_move_ss( xmm1 , xmm0 );
+	xmm5 = _mm_move_ss( xmm5 , xmm4 );
+	
+	xmm0 = _mm_mul_ss( xmm0, *(__m128*)&optistrx );
+	xmm1 = _mm_mul_ss( xmm1, *(__m128*)&optistry );
+	xmm4 = _mm_mul_ss( xmm4, *(__m128*)&optiheix );
+	xmm5 = _mm_mul_ss( xmm5, *(__m128*)&optiheiy );
+	xmm0 = _mm_add_ss( xmm0, *(__m128*)&optiaddx );
+	xmm1 = _mm_add_ss( xmm1, *(__m128*)&optiaddy );
+	xmm0 = _mm_add_ss( xmm0, xmm4 );
+	xmm1 = _mm_add_ss( xmm1, xmm5 );
+
+	xmm0 = _mm_shuffle_ps( xmm0, xmm0, 0 );         //[sx, sx, sx, sx]
+	xmm1 = _mm_shuffle_ps( xmm1, xmm1, 0 );	        //[sy, sy, sy, sy]
+	xmm0 = _mm_add_ps( xmm0, *(__m128*)&opti4[0] ); //[sx, sx + optistrx, sx + optistrx*2, sx + optistrx*3 ] 
+	xmm1 = _mm_add_ps( xmm1, *(__m128*)&opti4[1] ); //[sy, sy + optistry, sy + optistry*2, sy + optistry*3 ] 
+	xmm2 = _mm_load_ps( (const float *)&opti4[2] ); //[optistrx*4.0f ... ]
+	xmm3 = _mm_load_ps( (const float *)&opti4[3] ); //[optistry*4.0f ... ]
+	xmm2 = _mm_add_ps( xmm2, xmm0 );                //[sx, sx, sx, sx]
+	xmm3 = _mm_add_ps( xmm3, xmm1 );
+
+	xmm0 = _mm_mul_ps( xmm0, xmm0 );
+	xmm1 = _mm_mul_ps( xmm1, xmm1 );
+	xmm2 = _mm_mul_ps( xmm2, xmm2 );
+	xmm3 = _mm_mul_ps( xmm3, xmm3 );
+	xmm0 = _mm_add_ps( xmm0, xmm1 );
+	xmm1 = _mm_load_ps( (const float *)&opti4[4] ); //[ (optistrx*optistrx + optistry*optistry)*32.0f ... ]  
+	xmm2 = _mm_add_ps( xmm2, xmm3 );
+	xmm2 = _mm_sub_ps( xmm2, xmm0 );
+	i = zbufoff;
+
+	// --------------------------------------------------
+	// Check for pixel alignment of 4, and render blocks of pixels 
+	// based on that alignment.
+	// --------------------------------------------------
+	if ( ( *(long *)&p0 & 15 ) != 0 ) {
+		
+		if ( ( *(long*)&p0 & 8 ) != 0 ) {
+			xmm0 = _mm_shuffle_ps( xmm0, xmm0, 0x4e  ); // rotate right by 2
+		}
+		if ( ( *(long*)&p0 & 4 ) != 0 ) {
+			xmm0 = _mm_shuffle_ps( xmm0, xmm0, 0x39  ); // rotate right by 1
+		}
+
+		//;Do first 0-3 pixels to align unrolled loop of 4
+		do {
+			__m128i pixel = _mm_loadl_epi64( (const __m128i*)( &angstart[uurend[sx]>>16][iplc] ));
+			*(int *)p0 = _mm_cvtsi128_si32(pixel);
+
+			xmm3 = _mm_rsqrt_ss(xmm0);
+			pixel = _mm_shuffle_epi32(pixel, _MM_SHUFFLE(0,2,3,1) );
+			xmm7 = _mm_cvtepi32_ps( pixel );
+			xmm7 = _mm_mul_ss( xmm7, xmm3 );
+			xmm0 = _mm_shuffle_ps( xmm0, xmm0, 0x39  );
+			_mm_store_ss( (float*)(p0+i), xmm7 );
+			uurend[sx] += uurend[sx+MAXXDIM]; 
+			iplc += iinc; p0 += 4; sx++;
+			if (p0 == p1) {	return;	}
+		} while ( ( *(long *)&p0 & 15 ) != 0 ); 
+
+		xmm0 = _mm_add_ps( xmm0, xmm2 );
+		xmm2 = _mm_add_ps( xmm2, xmm1 );
+	}
+	// --------------------------------------------------
+	// Do 4 pixels at a time 
+    // --------------------------------------------------
+
+	while( p0+16 < p1 ) 
+	{
+
+		// This block should end up as movq's
+		__m128i col0i = _mm_loadl_epi64( (const __m128i*)&angstart[uurend[sx]>>16][iplc] );
+		__m128i col1i = _mm_loadl_epi64( (const __m128i*)&angstart[uurend[sx+1]>>16][iplc+iinc] );
+		__m128i col2i = _mm_loadl_epi64( (const __m128i*)&angstart[uurend[sx+2]>>16][iplc+iinc*2] );						
+		__m128i col3i = _mm_loadl_epi64( (const __m128i*)&angstart[uurend[sx+3]>>16][iplc+iinc*3] );
+		
+		// Combine 4 128bit registers into 2 128bit registers
+		__m128i comb1 = _mm_unpacklo_epi32( col0i, col1i );
+		__m128i comb2 = _mm_unpacklo_epi32( col2i, col3i );
+		__m128i pixel = _mm_unpacklo_epi32( comb1, comb2 );
+
+		// Store color for 4 pixels
+		_mm_stream_si128( (__m128i*)(p0), _mm_unpacklo_epi32( comb1, comb2 ) );		
+
+		__m128 zpixel = _mm_cvtepi32_ps( _mm_unpackhi_epi32( comb1, comb2 ) );
+		xmm3 = _mm_rsqrt_ps(xmm0); 
+		xmm0 = _mm_add_ps(xmm0, xmm2);        
+		xmm2 = _mm_add_ps(xmm2, xmm1);
+
+		zpixel = _mm_mul_ps( zpixel, xmm3 );
+
+		// Store 4 zbuffer pixels
+		_mm_stream_ps( (float*)(p0+i), zpixel  );
+		uurend[sx] += uurend[sx+MAXXDIM]; 
+		uurend[sx+1] += uurend[sx+1+MAXXDIM]; 
+		uurend[sx+2] += uurend[sx+2+MAXXDIM]; 
+		uurend[sx+3] += uurend[sx+3+MAXXDIM]; 
+		
+		iplc += iinc*4; p0 += 16; sx+=4;
+
+	} 
+
+    // --------------------------------------------------
+	// Render remaining individual pixels
+    // --------------------------------------------------
+	while ( p0!=p1 ) {
+		c0 = &angstart[uurend[sx]>>16][iplc];
+		
+		__m128i castdat = _mm_loadl_epi64( (const __m128i*)(c0) );
+		*(int *)p0 = _mm_cvtsi128_si32(castdat);
+		xmm3 = _mm_rsqrt_ss(xmm0); 
+		castdat = _mm_shuffle_epi32(castdat, _MM_SHUFFLE(0,2,3,1) );
+		xmm7 = _mm_cvtepi32_ps( castdat );         
+		xmm7 = _mm_mul_ss( xmm7, xmm3 );              
+		xmm0 = _mm_shuffle_ps( xmm0, xmm0, 0x39  );   // rotate right by 1
+		_mm_store_ss( (float*)(p0+i), xmm7 );    
+		uurend[sx] += uurend[sx+MAXXDIM];   
+		p0+=4; iplc+=iinc; sx++;
+	} 
+}
 
 
 #if (USEZBUFFER != 1)
@@ -1794,72 +1949,7 @@ void vrendzfog (long sx, long sy, long p1, long iplc, long iinc)
 
 #endif
 
-__m128 _mm_hadd4_ps(__m128 i)
-{   
-	__m128   t;
-	t = _mm_movehl_ps(t, i);
-	i = _mm_add_ps(i, t);
-	t = _mm_shuffle_ps(i, i, 0x55);
-	i = _mm_add_ps(i, t);
-	return i;
-} 
 
-// SSE scalar reciprocal sqrt using rsqrt op, plus one Newton-Rhaphson iteration
-__m128 _mm_rsqrt( const __m128 x )
-{
-	__m128 recip = _mm_rsqrt_ss( x );  // "estimate" opcode
-	const static __m128 three = { 3, 3, 3, 3 }; // aligned consts for fast load
-	const static __m128 half = { 0.5,0.5,0.5,0.5 };
-	__m128 halfrecip = _mm_mul_ss( half, recip );
-	__m128 threeminus_xrr = _mm_sub_ss( three, _mm_mul_ss( x, _mm_mul_ss ( recip, recip ) ) );
-	return _mm_mul_ss( halfrecip, threeminus_xrr );
-}
-
-struct v4f_t {
-	union { float x,y,z,w; };
-	__m128 v_xmm;
-};
-
-
-
-
-// expensive normalize, still cheaper than n/sqrt( v dot v )
-__m128 normalize_v4f(__m128 m)
-{
-	__m128 length = _mm_mul_ps(m, m);
-	length = _mm_add_ps(length, _mm_shuffle_ps(length, length, 0x4E));
-	return _mm_div_ps(m, _mm_sqrt_ps(_mm_add_ps(length,
-	                                   _mm_shuffle_ps(length, length, 0x11))));
-}
-__m128 dot_v4f(__m128 m)
-{
-	__m128 length = _mm_mul_ps(m, m);
-	length = _mm_add_ps(length, _mm_shuffle_ps(length, length, 0x4E));
-	return _mm_sqrt_ps(_mm_add_ps(length,
-	                                   _mm_shuffle_ps(length, length, 0x11)));
-}
-
-
-
-
-	//Example C code
-void vrendz (long sx, long sy, long p1, long iplc, long iinc)
-{
-	float dirx, diry; long i, p0;
-	castdat * c0;
-	p0 = ylookup[sy]+(sx<<2)+frameplace;
-	p1 = ylookup[sy]+(p1<<2)+frameplace;
-	dirx = optistrx*(float)sx + optiheix*(float)sy + optiaddx;
-	diry = optistry*(float)sx + optiheiy*(float)sy + optiaddy;
-	i = zbufoff;
-	while (p0 < p1)
-	{
-		c0 = &angstart[uurend[sx]>>16][iplc];
-		*(long *)p0 = c0->col;
-		*(float *)(p0+i) = (float)c0->dist*f_rsqrt(dirx*dirx+diry*diry);
-		dirx += optistrx; diry += optistry; uurend[sx] += uurend[sx+MAXXDIM]; p0 += 4; iplc += iinc; sx++;
-	}
-}
 void hrendzfog (long sx, long sy, long p1, long plc, long incr, long j)
 {
 	long p0, i, k, l; float dirx, diry;
